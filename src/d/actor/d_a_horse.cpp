@@ -18,6 +18,9 @@
 #include "Z2AudioLib/Z2Instances.h"
 #include "JSystem/JAudio2/JAUSectionHeap.h"
 #include <cmath>
+#if TARGET_PC
+#include "dusk/epona_fx.h"
+#endif
 #include <cstring>
 
 #define ANM_HS_BACK_WALK           6
@@ -556,6 +559,9 @@ int daHorse_c::modelCallBack(int i_jntNo) {
         }
     }
 
+#if TARGET_PC
+    dusk::epona::joint_callback(m_model, i_jntNo);
+#endif
     return 1;
 }
 
@@ -4655,6 +4661,9 @@ int daHorse_c::draw() {
 
     m_btp.entry(m_modelData, m_btpFrame);
     mDoExt_modelEntryDL(m_model);
+#if TARGET_PC
+    dusk::epona::draw(m_model, &tevStr);
+#endif
 
     cXyz shadow_pos(current.pos.x, 100.0f + current.pos.y, current.pos.z);
     m_shadowID = dComIfGd_setShadow(m_shadowID, 0, m_model, &shadow_pos, 1000.0f, 0.0f, current.pos.y, m_acch.GetGroundH(), m_acch.m_gnd, &tevStr, 0, 1.0f, dDlst_shadowControl_c::getSimpleTex());

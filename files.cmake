@@ -1440,6 +1440,8 @@ set(DUSK_FILES
         src/dusk/hash.hpp
         src/dusk/game_mode.cpp
         src/dusk/gamepad_color.cpp
+        src/dusk/epona_fx.cpp
+        src/dusk/epona_fx.h
         src/dusk/water_sim.cpp
         src/dusk/water_sim.h
         src/dusk/globals.cpp

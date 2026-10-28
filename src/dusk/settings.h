@@ -245,6 +245,8 @@ struct UserSettings {
         ConfigVar<DepthOfFieldMode> depthOfFieldMode;
         ConfigVar<bool> disableWaterRefraction;
         ConfigVar<bool> dynamicWater;
+        ConfigVar<bool> eponaHairPhysics;
+        ConfigVar<bool> eponaFur;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<FrameInterpMode> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;

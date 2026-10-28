@@ -80,6 +80,8 @@ UserSettings g_userSettings = {
         .depthOfFieldMode{"game.depthOfFieldMode", DepthOfFieldMode::Dusk},
         .disableWaterRefraction {"game.disableWaterRefraction", false},
         .dynamicWater {"game.dynamicWater", true},
+        .eponaHairPhysics {"game.eponaHairPhysics", true},
+        .eponaFur {"game.eponaFur", true},
         .enableTextureReplacements {"game.enableTextureReplacements", true},
         .enableFrameInterpolation {"game.enableFrameInterpolation", FrameInterpMode::Off},
         .internalResolutionScale {"game.internalResolutionScale", 0},
@@ -319,6 +321,8 @@ void registerSettings() {
     Register(g_userSettings.game.depthOfFieldMode);
     Register(g_userSettings.game.disableWaterRefraction);
     Register(g_userSettings.game.dynamicWater);
+    Register(g_userSettings.game.eponaHairPhysics);
+    Register(g_userSettings.game.eponaFur);
     Register(g_userSettings.game.enableTextureReplacements,
         [](const bool&, const bool&) { texture_replacements::reload(); });
     Register(g_userSettings.game.internalResolutionScale,

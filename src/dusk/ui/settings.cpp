@@ -880,6 +880,19 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                             "spread, cross and bounce off shores, a wake behind you, and sun "
                             "glints and foam on the crests. Turn off for the original flat ripples."
             });
+        config_bool_select(leftPane, rightPane, getSettings().game.eponaHairPhysics,
+            {
+                .key = "Epona Hair Physics",
+                .helpText = "Epona's mane, forelock and tail swing with real inertia when she "
+                            "gallops, stops, turns and jumps, and drift in the wind. Adds hair "
+                            "strands to the mane and tail. The straps and stirrups swing too."
+            });
+        config_bool_select(leftPane, rightPane, getSettings().game.eponaFur,
+            {
+                .key = "Epona Fur",
+                .helpText = "Draws a short coat of hair over Epona's body so it catches the "
+                            "light like real fur."
+            });
         config_bool_select(leftPane, rightPane, getSettings().game.enableMapBackground,
             {
                 .key = "Enable Mini-Map Shadows",
