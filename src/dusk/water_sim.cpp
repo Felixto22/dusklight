@@ -394,7 +394,54 @@ void splash(const cXyz& pos, f32 scale) {
     push(pos.x, pos.z, 38.0f * sc, 9.0f * sc);
 }
 
+// While it rains, wake the surface up over nearby water and let each drop that lands
+// on it leave a small ring.
+void rain() {
+    const int cnt = g_env_light.raincnt;
+    if (cnt <= 3) {
+        return;
+    }
+    fopAc_ac_c* pl = dComIfGp_getPlayer(0);
+    if (pl == NULL) {
+        return;
+    }
+    if (!s.active) {
+        static int probe = 0;
+        if (++probe % 30 != 0) {
+            return;
+        }
+        dBgS_ObjGndChk_Wtr wtr;
+        cXyz top(pl->current.pos.x, pl->current.pos.y + 300.0f, pl->current.pos.z);
+        wtr.SetPos(&top);
+        const f32 wy = dComIfG_Bgsp().GroundCross(&wtr);
+        if (wy <= -1e8f || std::fabs(pl->current.pos.y - wy) > 600.0f) {
+            return;
+        }
+        clear_all();
+        s.waterY = wy;
+        center_on(pl->current.pos.x, pl->current.pos.z);
+        s.active = true;
+    }
+    s.idle = 0;
+    static u32 seed = 0x2545F491u;
+    auto rnd = [] {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        return (seed & 0xFFFFFF) / f32(0x1000000);
+    };
+    const int drops = 2 + cnt * 14 / 250;
+    for (int d = 0; d < drops; d++) {
+        const int x = 2 + int(rnd() * (N - 4)), z = 2 + int(rnd() * (N - 4));
+        if (!cell_water(x, z)) {
+            continue;
+        }
+        push(s.originX + x * DX, s.originZ + z * DX, 7.0f + rnd() * 5.0f, 0.5f + rnd() * 0.8f);
+    }
+}
+
 void update() {
+    if (enabled()) {
+        rain();
+    }
     if (!s.active) {
         return;
     }
