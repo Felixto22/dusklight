@@ -8,6 +8,9 @@
 // weak data from it (unlike here).
 
 #include "d/d_particle.h"
+#if TARGET_PC
+#include "dusk/water_sim.h"
+#endif
 #include "d/d_jnt_col.h"
 #include "JSystem/JKernel/JKRExpHeap.h"
 #include "JSystem/JKernel/JKRSolidHeap.h"
@@ -1461,8 +1464,19 @@ void dPa_control_c::setWaterRipple(u32* param_0, cBgS_PolyInfo& param_1, cXyz co
         JPABaseEmitter* emitter = getEmitter(*param_0);
         if (emitter != NULL) {
             emitter->setRate(rate);
+#if TARGET_PC
+            // The dynamic surface draws these waves for real; hide the flat ring decal.
+            if (dusk::water::hide_flat_ripples()) {
+                emitter->setGlobalAlpha(0);
+            }
+#endif
         }
     }
+#if TARGET_PC
+    if (param_2 != NULL) {
+        dusk::water::ripple(*param_2, param_3);
+    }
+#endif
 }
 
 JPABaseEmitter* dPa_control_c::set(u8 param_0, u16 param_1, cXyz const* i_pos,

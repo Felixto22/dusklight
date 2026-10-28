@@ -873,6 +873,13 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
             "Framerate Cap", "Limit the framerate to the specified value.", 30, 540, 1,
             [] { return getSettings().game.enableFrameInterpolation.getValue() != FrameInterpMode::Capped; },
             [](int) { presentation::update_frame_rate_preference(); });
+        config_bool_select(leftPane, rightPane, getSettings().game.dynamicWater,
+            {
+                .key = "Dynamic Water",
+                .helpText = "Water reacts to Link, Epona, enemies and objects: real waves that "
+                            "spread, cross and bounce off shores, a wake behind you, and sun "
+                            "glints and foam on the crests. Turn off for the original flat ripples."
+            });
         config_bool_select(leftPane, rightPane, getSettings().game.enableMapBackground,
             {
                 .key = "Enable Mini-Map Shadows",

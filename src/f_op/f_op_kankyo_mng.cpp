@@ -4,6 +4,9 @@
  */
 
 #include "f_op/f_op_kankyo_mng.h"
+#if TARGET_PC
+#include "dusk/water_sim.h"
+#endif
 #include "SSystem/SComponent/c_malloc.h"
 #include "d/d_com_inf_game.h"
 
@@ -75,6 +78,11 @@ base_process_class* fopKyM_fastCreate(s16 i_procName, int i_param, cXyz* i_pos, 
 }
 
 fpc_ProcID fopKyM_createWpillar(cXyz const* i_pos, f32 scale, int i_param) {
+#if TARGET_PC
+    if (i_pos != NULL) {
+        dusk::water::splash(*i_pos, scale);
+    }
+#endif
     fopKyM_prm_class* append = fopKyM_CreateAppend();
     if (append == NULL) {
         return fpcM_ERROR_PROCESS_ID_e;

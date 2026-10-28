@@ -14,6 +14,9 @@
 #include "f_op/f_op_camera_mng.h"
 #include <cstring>
 #include "m_Do/m_Do_audio.h"
+#if TARGET_PC
+#include "dusk/water_sim.h"
+#endif
 
 static void dKyw_pntlight_set(WIND_INFLUENCE* pntwind);
 
@@ -1014,6 +1017,9 @@ static void wether_move_evil() {
 
 void dKyw_wether_move_draw() {
     g_env_light.moya_se = 0;
+#if TARGET_PC
+    dusk::water::update();
+#endif
 
     if (strcmp(dComIfGp_getStartStageName(), "Name")) {
         wether_move_sun();
@@ -1081,6 +1087,9 @@ void dKyw_wether_draw() {
 
         dKy_undwater_filter_draw();
     }
+#if TARGET_PC
+    dusk::water::draw();
+#endif
 }
 
 void dKyw_wether_draw2() {

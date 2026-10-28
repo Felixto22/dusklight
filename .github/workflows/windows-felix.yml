@@ -1,0 +1,83 @@
+name: Build Windows (Felix)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'felix/**'
+    paths-ignore:
+      - '*.md'
+      - '*LICENSE'
+      - 'docs/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+jobs:
+  build-windows:
+    name: Build Windows (${{matrix.name}})
+    runs-on: ${{matrix.runner}}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MSVC x86_64
+            runner: windows-latest
+            preset: msvc
+            msvc_arch: amd64
+            vcpkg_arch: x64
+            artifact_arch: x86_64
+          # - name: Clang x86_64
+          #   runner: windows-latest
+          #   preset: clang
+          #   msvc_arch: amd64
+          #   vcpkg_arch: x64
+          #   artifact_arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Enable Visual Studio environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{matrix.msvc_arch}}
+
+      # msvc-dev-cmd sets VCPKG_ROOT, set it back
+      - name: Override VCPKG_ROOT
+        run: echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Install dependencies
+        run: |
+          choco install ninja
+          vcpkg install freetype:${{matrix.vcpkg_arch}}-windows zstd:${{matrix.vcpkg_arch}}-windows
+
+      - name: Configure CMake
+        run: cmake --preset x-windows-ci-${{matrix.preset}}
+
+      - name: Build
+        run: cmake --build --preset x-windows-ci-${{matrix.preset}}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dusklight-${{env.APP_VERSION}}-win32-msvc-${{matrix.artifact_arch}}
+          path: |
+            build/install/*.exe
+            build/install/*.dll
+            build/install/res/
+            build/install/mods/
+            build/install/debug.7z
+            build/install/sdk/
