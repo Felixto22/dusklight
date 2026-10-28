@@ -242,6 +242,7 @@ void step() {
                 if (edge < 10) {
                     v *= 0.90f + 0.01f * edge;
                 }
+                v = std::max(-30.0f, std::min(30.0f, v));  // a wake, not a tsunami
                 s.next[i] = v;
                 e += v * v;
             }
@@ -313,42 +314,53 @@ void SurfacePacket::draw() {
     GXSetAlphaCompare(GX_GREATER, 0, GX_AOP_OR, GX_GREATER, 0);
     GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, GXColor{0, 0, 0, 0});
 
-    // Baseline: what a flat surface already shows, so only the waves' change is drawn.
-    const f32 y = s.waterY + 0.6f;
-    const cXyz mid(s.originX + (N / 2) * DX, y, s.originZ + (N / 2) * DX);
+    // The sheet is the real surface near the player: it rises on the crests and sinks in
+    // the troughs. Its shading is what a flat surface would not show (light on the slope
+    // facing the sun, shadow behind it, sky reflection and sun glint on the slopes, foam),
+    // so where the water is calm it fades out and the stage's own water shows through.
+    const f32 base = s.waterY + 0.8f;
+    const cXyz mid(s.originX + (N / 2) * DX, base, s.originZ + (N / 2) * DX);
     const cXyz v0 = (L.eye - mid).normZP();
     const cXyz hv0 = (L.sun + v0).normZP();
-    const f32 spec0 = std::pow(std::max(0.0f, hv0.y), 96.0f);
+    const f32 spec0 = std::pow(std::max(0.0f, hv0.y), 80.0f);
     const f32 fres0 = std::pow(1.0f - std::max(0.0f, v0.y), 5.0f);
+    const f32 lam0 = std::max(0.0f, L.sun.y);
 
-    constexpr f32 SLOPE_GAIN = 0.55f;  // height units -> normal tilt
-    auto shade = [&](int x, int z, f32 wx, f32 wz) -> GXColor {
+    constexpr f32 NORMAL_BOOST = 2.2f;  // steeper-looking slopes read better at a distance
+    auto shade = [&](int x, int z, f32 wx, f32 wz, f32 wy) -> GXColor {
         const int i = idx(x, z);
-        const f32 gx = (s.h[i + 1] - s.h[i - 1]) * SLOPE_GAIN / (2.0f * DX) * 9.0f;
-        const f32 gz = (s.h[i + N] - s.h[i - N]) * SLOPE_GAIN / (2.0f * DX) * 9.0f;
-        cXyz n(-gx, 1.0f, -gz);
-        n = n.normZP();
-        cXyz v = cXyz(L.eye.x - wx, L.eye.y - y, L.eye.z - wz).normZP();
+        const f32 gx = (s.h[i + 1] - s.h[i - 1]) / (2.0f * DX) * NORMAL_BOOST;
+        const f32 gz = (s.h[i + N] - s.h[i - N]) / (2.0f * DX) * NORMAL_BOOST;
+        const cXyz n = cXyz(-gx, 1.0f, -gz).normZP();
+        const cXyz v = cXyz(L.eye.x - wx, L.eye.y - wy, L.eye.z - wz).normZP();
         const cXyz hv = (L.sun + v).normZP();
-        const f32 spec = std::pow(std::max(0.0f, n.x * hv.x + n.y * hv.y + n.z * hv.z), 96.0f);
+        const f32 spec = std::pow(std::max(0.0f, n.x * hv.x + n.y * hv.y + n.z * hv.z), 80.0f);
         const f32 nv = std::max(0.0f, n.x * v.x + n.y * v.y + n.z * v.z);
         const f32 fres = std::pow(1.0f - nv, 5.0f);
+        const f32 lam = std::max(0.0f, n.x * L.sun.x + n.y * L.sun.y + n.z * L.sun.z);
+        const f32 lap = s.h[i - 1] + s.h[i + 1] + s.h[i - N] + s.h[i + N] - 4.0f * s.h[i];
         const f32 slope = std::sqrt(gx * gx + gz * gz);
-        // Crest brightness and trough shading from the sky reflection, sun glint on top.
-        f32 d = (fres - fres0) * 1.6f + (spec - spec0) * 2.2f + (s.h[i] * -0.035f);
-        f32 foam = std::max(0.0f, std::min(1.0f, (slope - 0.55f) * 1.6f));
-        f32 a = std::min(1.0f, std::fabs(d)) * 0.85f + foam * 0.6f;
-        // Fade at the grid edge so it never ends in a visible line.
+        // Lit side vs shadow side, crests brighter than troughs, reflection and glint.
+        const f32 d = (lam - lam0) * 2.4f + (fres - fres0) * 1.3f + (spec - spec0) * 2.6f +
+                      s.h[i] * 0.045f - lap * 0.05f;
+        const f32 foam = std::max(0.0f, std::min(1.0f, (slope - 0.9f) * 1.2f + (s.h[i] - 9.0f) * 0.08f));
+        const f32 presence = std::min(1.0f, std::fabs(s.h[i]) * 0.5f + slope * 5.0f);
+        f32 a = (0.22f + std::min(1.0f, std::fabs(d)) * 0.75f) * presence + foam * 0.65f;
+        a = std::min(a, 0.92f);
         const int edge = std::min(std::min(x, N - 1 - x), std::min(z, N - 1 - z));
         if (edge < 16) a *= edge / 16.0f;
         a *= L.strength;
         if (!cell_water(x, z)) a = 0.0f;
         GXColor c;
-        if (d >= 0.0f || foam > 0.0f) {
-            const f32 m = 0.8f + 0.2f * foam;
+        if (foam > 0.05f) {
+            c = GXColor{u8(L.tint.r * 0.96f), u8(L.tint.g * 0.97f), u8(L.tint.b), 0};
+        } else if (d >= 0.0f) {
+            const f32 m = 0.72f + 0.28f * std::min(1.0f, d);
             c = GXColor{u8(L.tint.r * m), u8(L.tint.g * m), u8(L.tint.b * m), 0};
         } else {
-            c = GXColor{8, 22, 30, 0};
+            // Shadowed slope: deep water tone, darker the more it turns away.
+            const f32 m = std::min(1.0f, -d);
+            c = GXColor{u8(28 - 18 * m), u8(58 - 30 * m), u8(66 - 30 * m), 0};
         }
         c.a = u8(std::min(255.0f, a * 255.0f));
         return c;
@@ -360,11 +372,13 @@ void SurfacePacket::draw() {
             const f32 wx = s.originX + x * DX;
             const f32 wz0 = s.originZ + z * DX;
             const f32 wz1 = wz0 + DX;
-            const GXColor c0 = shade(x, z, wx, wz0);
-            const GXColor c1 = shade(x, z + 1, wx, wz1);
-            GXPosition3f32(wx, y, wz0);
+            const f32 y0 = base + s.h[idx(x, z)];
+            const f32 y1 = base + s.h[idx(x, z + 1)];
+            const GXColor c0 = shade(x, z, wx, wz0, y0);
+            const GXColor c1 = shade(x, z + 1, wx, wz1, y1);
+            GXPosition3f32(wx, y0, wz0);
             GXColor4u8(c0.r, c0.g, c0.b, c0.a);
-            GXPosition3f32(wx, y, wz1);
+            GXPosition3f32(wx, y1, wz1);
             GXColor4u8(c1.r, c1.g, c1.b, c1.a);
         }
         GXEnd();
@@ -381,8 +395,9 @@ void ripple(const cXyz& pos, f32 speed) {
     // `speed` is how far the actor moved this frame (Link walking ~5-10, running ~20,
     // Epona galloping 40+). Standing still barely stirs the water; moving drives a wake.
     const f32 v = std::max(0.0f, speed);
-    const f32 depth = std::min(0.06f + 0.12f * v, 3.0f);
-    const f32 radius = 14.0f + std::min(16.0f, 0.5f * v);
+    // Tuned offline: ~4 cm crests walking, ~11-12 cm running or galloping.
+    const f32 depth = std::min(0.05f + 0.6f * std::pow(v, 0.7f), 12.0f);
+    const f32 radius = 16.0f + std::min(20.0f, 0.5f * v);
     push(pos.x, pos.z, radius, depth);
 }
 
@@ -391,7 +406,7 @@ void splash(const cXyz& pos, f32 scale) {
         return;
     }
     const f32 sc = std::max(0.3f, std::min(scale, 4.0f));
-    push(pos.x, pos.z, 38.0f * sc, 9.0f * sc);
+    push(pos.x, pos.z, 40.0f * sc, std::min(56.0f * sc, 60.0f));  // ~7 cm ring
 }
 
 // While it rains, wake the surface up over nearby water and let each drop that lands
@@ -434,7 +449,7 @@ void rain() {
         if (!cell_water(x, z)) {
             continue;
         }
-        push(s.originX + x * DX, s.originZ + z * DX, 7.0f + rnd() * 5.0f, 0.5f + rnd() * 0.8f);
+        push(s.originX + x * DX, s.originZ + z * DX, 7.0f + rnd() * 5.0f, 1.0f + rnd() * 1.4f);
     }
 }
 
