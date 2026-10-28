@@ -247,6 +247,7 @@ struct UserSettings {
         ConfigVar<bool> dynamicWater;
         ConfigVar<bool> eponaHairPhysics;
         ConfigVar<bool> eponaFur;
+        ConfigVar<int> eponaFurLength;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<FrameInterpMode> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;

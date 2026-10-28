@@ -893,6 +893,11 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                 .helpText = "Draws a short coat of hair over Epona's body so it catches the "
                             "light like real fur."
             });
+        config_int_select(leftPane, rightPane, getSettings().game.eponaFurLength,
+            "Epona Fur Length",
+            "How long and fluffy Epona's coat is. 1-3: a short, realistic horse coat. "
+            "4-10: longer, softer fur in pointed tufts, up to a plush, cartoon-style coat.",
+            1, 10, 1, [] { return !getSettings().game.eponaFur.getValue(); });
         config_bool_select(leftPane, rightPane, getSettings().game.enableMapBackground,
             {
                 .key = "Enable Mini-Map Shadows",

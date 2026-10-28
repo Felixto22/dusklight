@@ -402,49 +402,110 @@ void StrandPacket::draw() {
 // ---------------------------------------------------------------------------------------
 // Shell fur
 
-constexpr int kShells = 8;
-constexpr f32 kFurLength = 1.6f;   // game units (~1.6 cm)
-constexpr f32 kFurDensity = 34.0f; // pattern repeats across the body texture
+// The coat length comes from the "Epona Fur Length" setting (1-10): 1-3 a short real
+// horse coat, higher values a longer, fluffier plush coat in pointed tufts.
+constexpr int kMaxShells = 26;
 
-std::vector<Vec> g_shellPos[kShells];
-bool g_shellsReady = false;
+struct FurStyle {
+    int level = 0;
+    int shells = 8;
+    f32 length = 1.6f;   // game units (1 unit ~ 1 cm)
+    f32 density = 34.0f; // pattern repeats across the body texture
+    f32 rootShade = 0.78f;
+    f32 tipShade = 1.08f;
+    bool tufts = false;
+};
+
+FurStyle fur_style() {
+    const int v = std::clamp(dusk::getSettings().game.eponaFurLength.getValue(), 1, 10);
+    FurStyle f;
+    f.level = v;
+    const f32 t = (v - 1) / 9.0f;  // 0 short .. 1 very fluffy
+    f.shells = 8 + int(std::round(18.0f * t));
+    f.length = 1.2f + 8.8f * t * t + 1.4f * t;
+    f.density = 34.0f / (1.0f + 2.4f * t);
+    f.rootShade = 0.78f - 0.40f * t;  // deep coat gets dark between the tufts
+    f.tipShade = 1.08f + 0.12f * t;   // bright fuzzy tips
+    f.tufts = v >= 4;
+    return f;
+}
+
+std::vector<Vec> g_shellPos[kMaxShells];
+int g_shellLevel = 0;
 alignas(32) u8 g_noise[64 * 64];
-GXTexObj g_noiseObj;
+alignas(32) u8 g_tufts[64 * 64];
+GXTexObj g_noiseObj, g_tuftObj;
 bool g_noiseReady = false;
 
-void build_noise() {
+void to_tiles(const u8* linear, u8* out) {
     // I8 texture in the GameCube tile layout (8x4 texel blocks).
-    u32 seed = 0x1234567u;
-    auto r = [&] {
-        seed = seed * 1664525u + 1013904223u;
-        return (seed >> 8) / f32(1 << 24);
-    };
-    u8 linear[64 * 64];
-    for (int i = 0; i < 64 * 64; i++) {
-        const f32 v = r();
-        linear[i] = v < 0.6f ? u8(70 + 185 * r()) : 0;  // most texels grow a hair
-    }
     int o = 0;
     for (int by = 0; by < 64; by += 4) {
         for (int bx = 0; bx < 64; bx += 8) {
             for (int y = 0; y < 4; y++) {
                 for (int x = 0; x < 8; x++) {
-                    g_noise[o++] = linear[(by + y) * 64 + bx + x];
+                    out[o++] = linear[(by + y) * 64 + bx + x];
                 }
             }
         }
     }
-    GXInitTexObj(&g_noiseObj, g_noise, 64, 64, GX_TF_I8, GX_REPEAT, GX_REPEAT, GX_FALSE);
-    GXInitTexObjLOD(&g_noiseObj, GX_NEAR, GX_NEAR, 0.0f, 0.0f, 0.0f, GX_FALSE, GX_FALSE,
-                    GX_ANISO_1);
+}
+
+void build_noise() {
+    u32 seed = 0x1234567u;
+    auto r = [&] {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 8) / f32(1 << 24);
+    };
+    static u8 linear[64 * 64];
+    for (int i = 0; i < 64 * 64; i++) {
+        const f32 v = r();
+        linear[i] = v < 0.6f ? u8(70 + 185 * r()) : 0;  // most texels grow a hair
+    }
+    to_tiles(linear, g_noise);
+
+    // Tufts: overlapping cones (wrapping around the tile). Each shell cuts the cones
+    // higher up, so every tuft narrows to a soft point, like a plush or a squirrel's coat.
+    static f32 acc[64 * 64];
+    std::fill(acc, acc + 64 * 64, 0.0f);
+    for (int c = 0; c < 340; c++) {
+        const f32 cx = r() * 64.0f, cz = r() * 64.0f;
+        const f32 rad = 2.2f + r() * 3.2f;
+        const f32 peak = 0.55f + 0.45f * r();
+        const int x0 = int(std::floor(cx - rad)), x1 = int(std::ceil(cx + rad));
+        const int z0 = int(std::floor(cz - rad)), z1 = int(std::ceil(cz + rad));
+        for (int z = z0; z <= z1; z++) {
+            for (int x = x0; x <= x1; x++) {
+                const f32 d = std::sqrt((x - cx) * (x - cx) + (z - cz) * (z - cz)) / rad;
+                if (d >= 1.0f) continue;
+                f32& a = acc[(z & 63) * 64 + (x & 63)];
+                a = std::max(a, peak * (1.0f - d));
+            }
+        }
+    }
+    for (int i = 0; i < 64 * 64; i++) {
+        // A little per-texel grain so the tuft edges read as separate hairs.
+        const f32 v = acc[i] * (0.82f + 0.18f * r());
+        linear[i] = u8(std::clamp(v * 255.0f, 0.0f, 255.0f));
+    }
+    to_tiles(linear, g_tufts);
+
+    for (GXTexObj* obj : {&g_noiseObj, &g_tuftObj}) {
+        GXInitTexObj(obj, obj == &g_noiseObj ? g_noise : g_tufts, 64, 64, GX_TF_I8, GX_REPEAT,
+                     GX_REPEAT, GX_FALSE);
+        GXInitTexObjLOD(obj, GX_LINEAR, GX_LINEAR, 0.0f, 0.0f, 0.0f, GX_FALSE, GX_FALSE,
+                        GX_ANISO_1);
+    }
     g_noiseReady = true;
 }
 
-void build_shells(J3DModelData* data) {
+void build_shells(J3DModelData* data, const FurStyle& f) {
     const Vec* base = (const Vec*)data->getVertexData().getVtxPosArray();
-    for (int k = 0; k < kShells; k++) {
+    for (int k = 0; k < f.shells; k++) {
         g_shellPos[k].resize(kEponaPosCount);
-        const f32 h = kFurLength * f32(k + 1) / kShells;
+        // Shells packed closer near the skin, where the coat is densest.
+        const f32 u = f32(k + 1) / f.shells;
+        const f32 h = f.length * (0.35f * u + 0.65f * u * u);
         for (int i = 0; i < kEponaPosCount; i++) {
             const f32 off = kEponaFur[i] > 0 ? h : (kEponaFur[i] < 0 ? -2.5f : 0.0f);
             g_shellPos[k][i].x = base[i].x + kEponaNormals[i][0] * off;
@@ -452,7 +513,7 @@ void build_shells(J3DModelData* data) {
             g_shellPos[k][i].z = base[i].z + kEponaNormals[i][2] * off;
         }
     }
-    g_shellsReady = true;
+    g_shellLevel = f.level;
 }
 
 class FurPacket : public J3DPacket {
@@ -460,11 +521,12 @@ public:
     void draw() override;
     J3DModel* model = nullptr;
     GXColorS10 light{255, 255, 255, 255};
+    FurStyle style;
 };
 FurPacket l_furPacket;
 
 void FurPacket::draw() {
-    if (model == nullptr || !g_shellsReady || !g_noiseReady) {
+    if (model == nullptr || g_shellLevel != style.level || !g_noiseReady) {
         return;
     }
     J3DModelData* data = model->getModelData();
@@ -481,10 +543,10 @@ void FurPacket::draw() {
     j3dSys.reinitGX();
     GXSetNumIndStages(0);
     data->getTexture()->loadGX(mat->getTexNo(0), GX_TEXMAP0);
-    GXLoadTexObj(&g_noiseObj, GX_TEXMAP1);
+    GXLoadTexObj(style.tufts ? &g_tuftObj : &g_noiseObj, GX_TEXMAP1);
 
     Mtx tm;
-    PSMTXScale(tm, kFurDensity, kFurDensity, 1.0f);
+    PSMTXScale(tm, style.density, style.density, 1.0f);
     GXLoadTexMtxImm(tm, GX_TEXMTX0, GX_MTX2x4);
     GXSetNumTexGens(2);
     GXSetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
@@ -507,13 +569,14 @@ void FurPacket::draw() {
     GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, GXColor{0, 0, 0, 0});
     J3DDifferedTexMtx::sTexGenBlock = NULL;
 
-    for (int k = 0; k < kShells; k++) {
-        const f32 t = f32(k + 1) / kShells;
+    for (int k = 0; k < style.shells; k++) {
+        const f32 t = f32(k + 1) / style.shells;
         // Darker deep in the coat, lighter at the tips; tips thin out.
-        const f32 shade = 0.78f + 0.30f * t;
+        const f32 shade = style.rootShade + (style.tipShade - style.rootShade) * std::pow(t, 0.8f);
         GXColorS10 c{s16(light.r * shade), s16(light.g * shade), s16(light.b * shade), 255};
         GXSetTevColorS10(GX_TEVREG0, c);
-        GXSetAlphaCompare(GX_GREATER, u8(40 + 200 * t), GX_AOP_AND, GX_ALWAYS, 0);
+        const f32 cut = style.tufts ? 12.0f + 215.0f * t : 40.0f + 200.0f * t;
+        GXSetAlphaCompare(GX_GREATER, u8(cut), GX_AOP_AND, GX_ALWAYS, 0);
 
         sp->prepareDraw();
         j3dSys.setVtxPos(g_shellPos[k].data(), kEponaPosCount);
@@ -578,9 +641,11 @@ void draw(J3DModel* model, dKy_tevstr_c* tevstr) {
     }
     if (fur_enabled()) {
         if (!g_noiseReady) build_noise();
-        if (!g_shellsReady) build_shells(model->getModelData());
+        const FurStyle style = fur_style();
+        if (g_shellLevel != style.level) build_shells(model->getModelData(), style);
         l_furPacket.model = model;
         l_furPacket.light = l;
+        l_furPacket.style = style;
         dComIfGd_setList();
         j3dSys.getDrawBuffer(J3DSysDrawBuf_Opa)->entryImm(&l_furPacket, 0);
     }

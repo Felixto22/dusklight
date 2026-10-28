@@ -82,6 +82,7 @@ UserSettings g_userSettings = {
         .dynamicWater {"game.dynamicWater", true},
         .eponaHairPhysics {"game.eponaHairPhysics", true},
         .eponaFur {"game.eponaFur", true},
+        .eponaFurLength {"game.eponaFurLength", 8},
         .enableTextureReplacements {"game.enableTextureReplacements", true},
         .enableFrameInterpolation {"game.enableFrameInterpolation", FrameInterpMode::Off},
         .internalResolutionScale {"game.internalResolutionScale", 0},
@@ -323,6 +324,7 @@ void registerSettings() {
     Register(g_userSettings.game.dynamicWater);
     Register(g_userSettings.game.eponaHairPhysics);
     Register(g_userSettings.game.eponaFur);
+    Register(g_userSettings.game.eponaFurLength);
     Register(g_userSettings.game.enableTextureReplacements,
         [](const bool&, const bool&) { texture_replacements::reload(); });
     Register(g_userSettings.game.internalResolutionScale,
