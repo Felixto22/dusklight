@@ -620,10 +620,55 @@ void set_cards_hidden(J3DModel* model, bool hide) {
     g_dlHidden = true;
 }
 
+// Light our geometry exactly like one of Epona's own materials: same GX lights (the game
+// fills them in for this frame), same ambient/material colours and channel setup.
+// With `vertexAlbedo` the material colour comes from our vertex colours instead.
+void load_material_lighting(J3DMaterial* mat, bool vertexAlbedo) {
+    J3DColorBlock* cb = mat != nullptr ? mat->getColorBlock() : nullptr;
+    J3DColorChan* ch = cb != nullptr ? cb->getColorChan(0) : nullptr;
+    GXSetNumChans(1);
+    if (ch == nullptr) {
+        GXSetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, vertexAlbedo ? GX_SRC_VTX : GX_SRC_REG,
+                      GX_LIGHT_NULL, GX_DF_NONE, GX_AF_NONE);
+        GXSetChanMatColor(GX_COLOR0A0, GXColor{255, 255, 255, 255});
+        return;
+    }
+    for (u32 i = 0; i < 8; i++) {
+        J3DLightObj* l = cb->getLight(i);
+        if (l == nullptr) continue;
+        const J3DLightInfo& li = *l->getLightInfo();
+        GXLightObj o;
+        GXInitLightPos(&o, li.mLightPosition.x, li.mLightPosition.y, li.mLightPosition.z);
+        GXInitLightDir(&o, li.mLightDirection.x, li.mLightDirection.y, li.mLightDirection.z);
+        GXInitLightAttn(&o, li.mCosAtten.x, li.mCosAtten.y, li.mCosAtten.z, li.mDistAtten.x,
+                        li.mDistAtten.y, li.mDistAtten.z);
+        GXInitLightColor(&o, li.mColor);
+        GXLoadLightObjImm(&o, GXLightID(1 << i));
+    }
+    if (J3DGXColor* amb = cb->getAmbColor(0)) GXSetChanAmbColor(GX_COLOR0A0, *amb);
+    if (J3DGXColor* mc = cb->getMatColor(0)) {
+        GXSetChanMatColor(GX_COLOR0A0, vertexAlbedo ? GXColor{255, 255, 255, 255} : GXColor(*mc));
+    }
+    GXSetChanCtrl(GX_COLOR0, ch->getEnable() ? GX_ENABLE : GX_DISABLE, GXColorSrc(ch->getAmbSrc()),
+                  vertexAlbedo ? GX_SRC_VTX : GXColorSrc(ch->getMatSrc()), ch->getLightMask(),
+                  GXDiffuseFn(ch->getDiffuseFn()), GXAttnFn(ch->getAttnFn()));
+    GXSetChanCtrl(GX_ALPHA0, GX_DISABLE, GX_SRC_REG, GX_SRC_REG, GX_LIGHT_NULL, GX_DF_NONE,
+                  GX_AF_NONE);
+}
+
+J3DMaterial* shape_material(J3DModel* model, int shapeNo) {
+    J3DModelData* data = model->getModelData();
+    if (shapeNo >= data->getShapeNum()) return nullptr;
+    J3DShape* sh = data->getShapeNodePointer(shapeNo);
+    return sh != nullptr ? sh->getMaterial() : nullptr;
+}
+
 class GroomPacket : public J3DPacket {
 public:
     void draw() override;
     GXColorS10 light{255, 255, 255, 255};
+    J3DMaterial* maneMat = nullptr;
+    J3DMaterial* tailMat = nullptr;
 };
 GroomPacket l_groomPacket;
 
@@ -652,14 +697,14 @@ void GroomPacket::draw() {
     GXSetNumIndStages(0);
     GXClearVtxDesc();
     GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GXSetVtxDesc(GX_VA_NRM, GX_DIRECT);
     GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
     GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-    GXSetNumChans(1);
-    GXSetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE,
-                  GX_AF_NONE);
+    int litGroup = -1;
     GXLoadTexObj(&g_hairObj, GX_TEXMAP0);
     GXSetNumTexGens(1);
     GXSetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
@@ -670,6 +715,7 @@ void GroomPacket::draw() {
     GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
     GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
     GXLoadPosMtxImm(j3dSys.getViewMtx(), GX_PNMTX0);
+    GXLoadNrmMtxImm(j3dSys.getViewMtx(), GX_PNMTX0);
     GXSetCurrentMtx(GX_PNMTX0);
     GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_SET);
     GXSetCullMode(GX_CULL_NONE);
@@ -678,13 +724,17 @@ void GroomPacket::draw() {
     GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, GXColor{0, 0, 0, 0});
     J3DDifferedTexMtx::sTexGenBlock = NULL;
 
-    const f32 lr = light.r / 255.0f, lg = light.g / 255.0f, lb = light.b / 255.0f;
     for (int si = 0; si < kGroomStrandCount; si++) {
         const GroomStrand& st = kGroomStrands[si];
         const GroomState& g = g_groom[si];
         const int n = std::min<int>(st.count, kGroomMaxPts);
         if (!g.placed || n < 2) continue;
         const bool tail = st.group == 1;
+        if (litGroup != st.group) {
+            // The game's own lights for the mane / tail materials.
+            litGroup = st.group;
+            load_material_lighting(tail ? tailMat : maneMat, true);
+        }
         const f32 h = hash01(u32(si) * 2654435761u);
         const f32 w0 = (tail ? 2.6f : 2.2f) * (0.8f + 0.4f * h);
         const f32 w1 = w0 * 0.42f;
@@ -698,26 +748,31 @@ void GroomPacket::draw() {
             const V3 dir = norm(b - a);
             const V3 view = norm(eye - g.p[k]);
             const V3 side = norm(cross(dir, view)) * (0.5f * (w0 + (w1 - w0) * t));
-            // Lit along the hair: diffuse from the angle to the light, a sheen where the
-            // half vector is across the strands.
             const V3 L = norm(sun - g.p[k]);
             const V3 H = norm(L + view);
-            const f32 tl = dot(dir, L), th = dot(dir, H);
-            const f32 diff = 0.55f + 0.45f * std::sqrt(std::max(0.0f, 1.0f - tl * tl));
-            const f32 spec = std::pow(std::sqrt(std::max(0.0f, 1.0f - th * th)), 48.0f) * 0.30f * sheen;
-            const f32 ao = 0.62f + 0.38f * std::min(1.0f, t * 1.6f);
+            const f32 th = dot(dir, H);
+            // A sheen where the half vector is across the strands (hair highlight); the
+            // light itself comes from the game's lights through the normal.
+            const f32 spec = std::pow(std::sqrt(std::max(0.0f, 1.0f - th * th)), 48.0f) * 0.22f * sheen;
+            const f32 ao = 0.66f + 0.34f * std::min(1.0f, t * 1.6f);
             const u32 rgb = kGroomPoints[st.first + k].rgb;
             const f32 cr = ((rgb >> 16) & 0xFF) / 255.0f, cg = ((rgb >> 8) & 0xFF) / 255.0f,
                       cb = (rgb & 0xFF) / 255.0f;
-            const f32 m = diff * ao * 0.62f * tone;  // x2 in the TEV
-            const u8 r = u8(std::clamp((cr * m + spec * 0.5f) * lr * 255.0f, 0.0f, 255.0f));
-            const u8 gg = u8(std::clamp((cg * m + spec * 0.48f) * lg * 255.0f, 0.0f, 255.0f));
-            const u8 bb = u8(std::clamp((cb * m + spec * 0.44f) * lb * 255.0f, 0.0f, 255.0f));
+            const f32 m = ao * 0.5f * tone;  // x2 in the TEV
+            const u8 r = u8(std::clamp((cr * m + spec) * 255.0f, 0.0f, 255.0f));
+            const u8 gg = u8(std::clamp((cg * m + spec * 0.95f) * 255.0f, 0.0f, 255.0f));
+            const u8 bb = u8(std::clamp((cb * m + spec * 0.88f) * 255.0f, 0.0f, 255.0f));
+            // Facing the camera, tilted up so the top of the mane catches the light.
+            V3 nrm = norm(cross(side, dir));
+            if (dot(nrm, view) < 0.0f) nrm = nrm * -1.0f;
+            nrm = norm(nrm + V3{0.0f, 0.6f, 0.0f});
             const V3 p0 = g.p[k] - side, p1 = g.p[k] + side;
             GXPosition3f32(p0.x, p0.y, p0.z);
+            GXNormal3f32(nrm.x, nrm.y, nrm.z);
             GXColor4u8(r, gg, bb, 255);
             GXTexCoord2f32(s0, t);
             GXPosition3f32(p1.x, p1.y, p1.z);
+            GXNormal3f32(nrm.x, nrm.y, nrm.z);
             GXColor4u8(r, gg, bb, 255);
             GXTexCoord2f32(s1, t);
         }
@@ -879,15 +934,16 @@ void FurPacket::draw() {
     GXSetNumTexGens(2);
     GXSetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
     GXSetTexCoordGen(GX_TEXCOORD1, GX_TG_MTX2x4, GX_TG_TEX0, GX_TEXMTX0);
-    GXSetNumChans(0);
+    load_material_lighting(mat, false);
     GXSetNumTevStages(2);
-    GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR_NULL);
-    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_C0, GX_CC_ZERO);
+    // Body texture x the body's own lighting x the depth shade in C0.
+    GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
     GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    GXSetTevColorIn(GX_TEVSTAGE1, GX_CC_ZERO, GX_CC_CPREV, GX_CC_C0, GX_CC_ZERO);
     GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_KONST);
     GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
     GXSetTevOrder(GX_TEVSTAGE1, GX_TEXCOORD1, GX_TEXMAP1, GX_COLOR_NULL);
-    GXSetTevColorIn(GX_TEVSTAGE1, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_CPREV);
     GXSetTevColorOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
     GXSetTevAlphaIn(GX_TEVSTAGE1, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
     GXSetTevAlphaOp(GX_TEVSTAGE1, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
@@ -901,7 +957,8 @@ void FurPacket::draw() {
         const f32 t = f32(k + 1) / style.shells;
         // Darker deep in the coat, lighter at the tips; tips thin out.
         const f32 shade = style.rootShade + (style.tipShade - style.rootShade) * std::pow(t, 0.8f);
-        GXColorS10 c{s16(light.r * shade), s16(light.g * shade), s16(light.b * shade), 255};
+        const s16 sv = s16(255.0f * shade);
+        GXColorS10 c{sv, sv, sv, 255};
         GXSetTevColorS10(GX_TEVREG0, c);
         const f32 cut = style.tufts ? 12.0f + 215.0f * t : 40.0f + 200.0f * t;
         GXSetAlphaCompare(GX_GREATER, u8(cut), GX_AOP_AND, GX_ALWAYS, 0);
@@ -964,6 +1021,8 @@ void draw(J3DModel* model, dKy_tevstr_c* tevstr) {
             simulate_groom(model);
         }
         l_groomPacket.light = l;
+        l_groomPacket.maneMat = shape_material(model, 2);
+        l_groomPacket.tailMat = shape_material(model, 0);
         dComIfGd_setList();
         j3dSys.getDrawBuffer(J3DSysDrawBuf_Opa)->entryImm(&l_groomPacket, 0);
         g_strandsReady = false;
