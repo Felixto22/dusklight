@@ -60,15 +60,51 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install dependencies
+        shell: pwsh
         run: |
-          choco install ninja
-          vcpkg install freetype:${{matrix.vcpkg_arch}}-windows zstd:${{matrix.vcpkg_arch}}-windows
+          $ok = $false
+          for ($i = 0; $i -lt 3 -and -not $ok; $i++) {
+            choco install ninja -y --no-progress
+            $ok = ($LASTEXITCODE -eq 0)
+            if (-not $ok) { Start-Sleep 20 }
+          }
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            echo "::warning::choco could not install ninja (exit $LASTEXITCODE); using pip"
+            python -m pip install ninja
+            if ($LASTEXITCODE -ne 0) { echo "::error::ninja install failed"; exit 1 }
+          }
+          echo "::notice::ninja $(ninja --version)"
+          echo "::notice::VCPKG_ROOT=$env:VCPKG_ROOT exists=$(Test-Path $env:VCPKG_ROOT)"
+          $ok = $false
+          for ($i = 0; $i -lt 3 -and -not $ok; $i++) {
+            vcpkg install freetype:${{matrix.vcpkg_arch}}-windows zstd:${{matrix.vcpkg_arch}}-windows 2>&1 | Tee-Object -FilePath vcpkg.log
+            $ok = ($LASTEXITCODE -eq 0)
+            if (-not $ok) { Start-Sleep 20 }
+          }
+          if (-not $ok) {
+            $tail = (Get-Content vcpkg.log -Tail 15) -join ' | '
+            echo "::error::vcpkg install failed: $tail"
+            exit 1
+          }
 
       - name: Configure CMake
-        run: cmake --preset x-windows-ci-${{matrix.preset}}
+        shell: pwsh
+        run: |
+          cmake --preset x-windows-ci-${{matrix.preset}} 2>&1 | Tee-Object -FilePath configure.log
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content configure.log -Tail 20) -join ' | '
+            echo "::error::configure failed: $tail"
+            exit 1
+          }
 
       - name: Build
-        run: cmake --build --preset x-windows-ci-${{matrix.preset}}
+        shell: pwsh
+        run: |
+          cmake --build --preset x-windows-ci-${{matrix.preset}} 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Select-String -Path build.log -Pattern 'error C|error LNK|fatal error|: error' | Select-Object -First 12 | ForEach-Object { echo "::error::$($_.Line)" }
+            exit 1
+          }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
