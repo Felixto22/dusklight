@@ -19,6 +19,8 @@
 #include "dusk/settings.h"
 #include "m_Do/m_Do_mtx.h"
 
+#include <aurora/dl.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -28,9 +30,11 @@ namespace dusk::epona {
 namespace {
 
 #include "dusk/epona_data.inc"
+#include "dusk/epona_groom.inc"
 
 bool hair_enabled() { return dusk::getSettings().game.eponaHairPhysics.getValue(); }
 bool fur_enabled() { return dusk::getSettings().game.eponaFur.getValue(); }
+bool groom_enabled() { return dusk::getSettings().game.eponaRealMane.getValue(); }
 
 u32 g_frame = 0;
 
@@ -399,6 +403,326 @@ void StrandPacket::draw() {
     J3DShape::resetVcdVatCache();
 }
 
+
+// ---------------------------------------------------------------------------------------
+// Real mane and tail
+//
+// The original mane and tail are a few flat cards with hair painted on them. With this
+// option they are hidden (their triangles are collapsed in the model's display lists) and
+// replaced by ~2400 locks of hair grown along those same cards: each lock follows the
+// painted hair from root to tip, takes its colours from the original texture, is skinned
+// to the same joints (so it follows the animation and the hair-bone springs), and then
+// swings on its own with verlet physics: inertia, gravity, wind, and the pull back to
+// its groomed shape getting weaker toward the tip. Each lock is drawn as a ribbon of
+// eight fine hairs lit along the hair (bright sheen across the strands, darker roots).
+
+constexpr int kGroomMaxPts = 12;
+
+struct GroomState {
+    V3 p[kGroomMaxPts], q[kGroomMaxPts];
+    f32 rest[kGroomMaxPts];
+    bool placed = false;
+};
+std::vector<GroomState> g_groom;
+u32 g_groomFrame = 0;
+
+V3 groom_target(J3DModel* model, const GroomPoint& gp) {
+    const f32 a[3] = {gp.a[0] * kGroomScale, gp.a[1] * kGroomScale, gp.a[2] * kGroomScale};
+    const V3 pa = xform(model->getAnmMtx(gp.j0), a);
+    if (gp.w0 >= 255) {
+        return pa;
+    }
+    const f32 b[3] = {gp.b[0] * kGroomScale, gp.b[1] * kGroomScale, gp.b[2] * kGroomScale};
+    const V3 pb = xform(model->getAnmMtx(gp.j1), b);
+    const f32 w = gp.w0 / 255.0f;
+    return pa * w + pb * (1.0f - w);
+}
+
+void simulate_groom(J3DModel* model) {
+    if (g_groom.size() != size_t(kGroomStrandCount)) {
+        g_groom.assign(kGroomStrandCount, GroomState{});
+    }
+    const V3 gravity{0.0f, -0.16f, 0.0f};
+    const V3 windHere = wind_at(groom_target(model, kGroomPoints[0]));
+    for (int si = 0; si < kGroomStrandCount; si++) {
+        const GroomStrand& st = kGroomStrands[si];
+        GroomState& g = g_groom[si];
+        const int n = std::min<int>(st.count, kGroomMaxPts);
+        const bool tail = st.group == 1;
+        V3 t[kGroomMaxPts];
+        for (int k = 0; k < n; k++) t[k] = groom_target(model, kGroomPoints[st.first + k]);
+        if (!g.placed || len(t[0] - g.p[0]) > 200.0f) {
+            for (int k = 0; k < n; k++) {
+                g.p[k] = g.q[k] = t[k];
+                g.rest[k] = k == 0 ? 0.0f : len(t[k] - t[k - 1]);
+            }
+            g.placed = true;
+            continue;
+        }
+        const V3 wind = windHere * (tail ? 0.35f : 0.25f);
+        g.q[0] = g.p[0];
+        g.p[0] = t[0];
+        for (int k = 1; k < n; k++) {
+            const f32 u = f32(k) / (n - 1);
+            const V3 v = (g.p[k] - g.q[k]) * 0.90f;
+            g.q[k] = g.p[k];
+            g.p[k] += v + gravity + wind * u;
+            // Pull back toward the groomed shape: firm at the root, loose at the tip.
+            const f32 stiff = tail ? 0.42f - 0.37f * u : 0.50f - 0.42f * u;
+            g.p[k] += (t[k] - g.p[k]) * stiff;
+        }
+        // Keep every segment its length, following the root.
+        for (int k = 1; k < n; k++) {
+            const V3 e = g.p[k] - g.p[k - 1];
+            const f32 l = len(e);
+            if (l > 1e-4f) {
+                g.p[k] = g.p[k - 1] + e * (g.rest[k] / l);
+            }
+        }
+    }
+}
+
+// Hairs across each lock: 8 hairs of slightly different shade and length (I8, GX tiles).
+alignas(32) u8 g_hairTex[32 * 64];
+GXTexObj g_hairObj;
+bool g_hairTexReady = false;
+
+void build_hair_tex() {
+    u32 seed = 0xA5A5F00Du;
+    auto r = [&] {
+        seed = seed * 1664525u + 1013904223u;
+        return (seed >> 8) / f32(1 << 24);
+    };
+    static u8 linear[64][32];
+    for (int hair = 0; hair < 8; hair++) {
+        const f32 shade = 0.72f + 0.28f * r();
+        const f32 end = 0.78f + 0.22f * r();
+        const f32 wob = (r() - 0.5f) * 0.9f;
+        for (int y = 0; y < 64; y++) {
+            const f32 t = (y + 0.5f) / 64.0f;
+            const f32 thin = t < end ? 1.0f - 0.55f * (t / end) * (t / end) : 0.0f;
+            for (int x = 0; x < 4; x++) {
+                const f32 c = std::fabs((x + 0.5f + wob * t) - 2.0f) / 2.0f;  // 0 centre .. 1 edge
+                const f32 v = std::max(0.0f, 1.0f - c / std::max(0.2f, thin)) * shade;
+                linear[y][hair * 4 + x] = u8(std::clamp(v * 255.0f, 0.0f, 255.0f));
+            }
+        }
+    }
+    int o = 0;
+    for (int by = 0; by < 64; by += 4) {
+        for (int bx = 0; bx < 32; bx += 8) {
+            for (int y = 0; y < 4; y++) {
+                for (int x = 0; x < 8; x++) {
+                    g_hairTex[o++] = linear[by + y][bx + x];
+                }
+            }
+        }
+    }
+    GXInitTexObj(&g_hairObj, g_hairTex, 32, 64, GX_TF_I8, GX_CLAMP, GX_CLAMP, GX_FALSE);
+    GXInitTexObjLOD(&g_hairObj, GX_LINEAR, GX_LINEAR, 0.0f, 0.0f, 0.0f, GX_FALSE, GX_FALSE,
+                    GX_ANISO_1);
+    g_hairTexReady = true;
+}
+
+// Collapse (or restore) the triangles of the original cards in the shared model data.
+struct DlBackup {
+    J3DShapeDraw* draw;
+    std::vector<u8> bytes;
+};
+std::vector<DlBackup> g_dlBackup;
+J3DModelData* g_dlData = nullptr;
+bool g_dlHidden = false;
+
+bool in_list(u16 v, const u16* list, int n) {
+    for (int i = 0; i < n; i++) {
+        if (list[i] == v) return true;
+    }
+    return false;
+}
+
+void hide_cards(J3DShape* shape, const u16* list, int n) {
+    namespace dl = aurora::gx::dl;
+    for (u16 g = 0; g < shape->getMtxGroupNum(); g++) {
+        J3DShapeDraw* sd = shape->getShapeDraw(g);
+        if (sd == nullptr) continue;
+        u8* data = sd->getDisplayList();
+        const u32 size = sd->getDisplayListSize();
+        g_dlBackup.push_back({sd, std::vector<u8>(data, data + size)});
+        dl::Reader reader{data, size, shape->getVtxDesc()};
+        while (const auto cmd = reader.next()) {
+            if (cmd->kind == dl::Command::Kind::Passthrough) continue;
+            const dl::DrawCmd& d = cmd->draw;
+            const u32 stride = d.layout->stride;
+            auto hidden = [&](u32 v) { return in_list(d.attr_idx(v, GX_VA_POS), list, n); };
+            if (cmd->kind == dl::Command::Kind::DrawIndexed) {
+                u8* idx = const_cast<u8*>(d.indices);
+                for (u32 i = 0; i + 2 < d.indexCount; i += 3) {
+                    const u16 a = d.index(i), b = d.index(i + 1), c = d.index(i + 2);
+                    if (hidden(a) || hidden(b) || hidden(c)) {
+                        std::memcpy(idx + (i + 1) * 2, idx + i * 2, 2);
+                        std::memcpy(idx + (i + 2) * 2, idx + i * 2, 2);
+                    }
+                }
+                continue;
+            }
+            u8* verts = const_cast<u8*>(d.vertices);
+            if (d.prim == GX_TRIANGLES) {
+                for (u32 i = 0; i + 2 < d.vtxCount; i += 3) {
+                    if (hidden(i) || hidden(i + 1) || hidden(i + 2)) {
+                        std::memcpy(verts + (i + 1) * stride, verts + i * stride, stride);
+                        std::memcpy(verts + (i + 2) * stride, verts + i * stride, stride);
+                    }
+                }
+            } else {
+                bool any = false;
+                for (u32 i = 0; i < d.vtxCount && !any; i++) any = hidden(i);
+                if (any) {
+                    for (u32 i = 1; i < d.vtxCount; i++) {
+                        std::memcpy(verts + i * stride, verts, stride);
+                    }
+                }
+            }
+        }
+        DCStoreRange(data, size);
+    }
+}
+
+void restore_cards() {
+    for (DlBackup& b : g_dlBackup) {
+        std::memcpy(b.draw->getDisplayList(), b.bytes.data(), b.bytes.size());
+        DCStoreRange(b.draw->getDisplayList(), b.bytes.size());
+    }
+    g_dlBackup.clear();
+    g_dlHidden = false;
+}
+
+void set_cards_hidden(J3DModel* model, bool hide) {
+    J3DModelData* data = model->getModelData();
+    if (data != g_dlData) {
+        // New model data (archive reloaded): the old backups point at freed memory.
+        g_dlBackup.clear();
+        g_dlHidden = false;
+        g_dlData = data;
+    }
+    if (hide == g_dlHidden) return;
+    if (!hide) {
+        restore_cards();
+        return;
+    }
+    if (data->getShapeNum() < 3) return;
+    hide_cards(data->getShapeNodePointer(0), kGroomHideTail,
+               int(sizeof(kGroomHideTail) / sizeof(kGroomHideTail[0])));
+    hide_cards(data->getShapeNodePointer(2), kGroomHideMane,
+               int(sizeof(kGroomHideMane) / sizeof(kGroomHideMane[0])));
+    g_dlHidden = true;
+}
+
+class GroomPacket : public J3DPacket {
+public:
+    void draw() override;
+    GXColorS10 light{255, 255, 255, 255};
+};
+GroomPacket l_groomPacket;
+
+inline f32 hash01(u32 x) {
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return (x & 0xFFFFFF) / f32(0x1000000);
+}
+
+void GroomPacket::draw() {
+    if (g_groom.size() != size_t(kGroomStrandCount) || !g_hairTexReady) {
+        return;
+    }
+    camera_process_class* cam = dComIfGp_getCamera(0);
+    if (cam == NULL) {
+        return;
+    }
+    const V3 eye{cam->view.lookat.eye.x, cam->view.lookat.eye.y, cam->view.lookat.eye.z};
+    dScnKy_env_light_c* env = dKy_getEnvlight();
+    const V3 sun{env->sun_pos.x, env->sun_pos.y, env->sun_pos.z};
+
+    j3dSys.reinitGX();
+    GXSetNumIndStages(0);
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+    GXSetNumChans(1);
+    GXSetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE,
+                  GX_AF_NONE);
+    GXLoadTexObj(&g_hairObj, GX_TEXMAP0);
+    GXSetNumTexGens(1);
+    GXSetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+    GXSetNumTevStages(1);
+    GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
+    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
+    GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_2, GX_TRUE, GX_TEVPREV);
+    GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
+    GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+    GXLoadPosMtxImm(j3dSys.getViewMtx(), GX_PNMTX0);
+    GXSetCurrentMtx(GX_PNMTX0);
+    GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_SET);
+    GXSetCullMode(GX_CULL_NONE);
+    GXSetZMode(GX_ENABLE, GX_LEQUAL, GX_ENABLE);
+    GXSetAlphaCompare(GX_GREATER, 70, GX_AOP_AND, GX_ALWAYS, 0);
+    GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, GXColor{0, 0, 0, 0});
+    J3DDifferedTexMtx::sTexGenBlock = NULL;
+
+    const f32 lr = light.r / 255.0f, lg = light.g / 255.0f, lb = light.b / 255.0f;
+    for (int si = 0; si < kGroomStrandCount; si++) {
+        const GroomStrand& st = kGroomStrands[si];
+        const GroomState& g = g_groom[si];
+        const int n = std::min<int>(st.count, kGroomMaxPts);
+        if (!g.placed || n < 2) continue;
+        const bool tail = st.group == 1;
+        const f32 h = hash01(u32(si) * 2654435761u);
+        const f32 w0 = (tail ? 2.6f : 2.2f) * (0.8f + 0.4f * h);
+        const f32 w1 = w0 * 0.42f;
+        const f32 sheen = 0.85f + 0.3f * hash01(u32(si) * 40503u + 7u);
+        const f32 s0 = 0.0f, s1 = 1.0f;
+        GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, u16(n * 2));
+        for (int k = 0; k < n; k++) {
+            const f32 t = f32(k) / (n - 1);
+            const V3 a = g.p[std::max(0, k - 1)], b = g.p[std::min(n - 1, k + 1)];
+            const V3 dir = norm(b - a);
+            const V3 view = norm(eye - g.p[k]);
+            const V3 side = norm(cross(dir, view)) * (0.5f * (w0 + (w1 - w0) * t));
+            // Lit along the hair: diffuse from the angle to the light, a sheen where the
+            // half vector is across the strands.
+            const V3 L = norm(sun - g.p[k]);
+            const V3 H = norm(L + view);
+            const f32 tl = dot(dir, L), th = dot(dir, H);
+            const f32 diff = 0.55f + 0.45f * std::sqrt(std::max(0.0f, 1.0f - tl * tl));
+            const f32 spec = std::pow(std::sqrt(std::max(0.0f, 1.0f - th * th)), 48.0f) * 0.30f * sheen;
+            const f32 ao = 0.62f + 0.38f * std::min(1.0f, t * 1.6f);
+            const u32 rgb = kGroomPoints[st.first + k].rgb;
+            const f32 cr = ((rgb >> 16) & 0xFF) / 255.0f, cg = ((rgb >> 8) & 0xFF) / 255.0f,
+                      cb = (rgb & 0xFF) / 255.0f;
+            const f32 m = diff * ao * 0.62f;  // x2 in the TEV
+            const u8 r = u8(std::clamp((cr * m + spec * 0.5f) * lr * 255.0f, 0.0f, 255.0f));
+            const u8 gg = u8(std::clamp((cg * m + spec * 0.48f) * lg * 255.0f, 0.0f, 255.0f));
+            const u8 bb = u8(std::clamp((cb * m + spec * 0.44f) * lb * 255.0f, 0.0f, 255.0f));
+            const V3 p0 = g.p[k] - side, p1 = g.p[k] + side;
+            GXPosition3f32(p0.x, p0.y, p0.z);
+            GXColor4u8(r, gg, bb, 255);
+            GXTexCoord2f32(s0, t);
+            GXPosition3f32(p1.x, p1.y, p1.z);
+            GXColor4u8(r, gg, bb, 255);
+            GXTexCoord2f32(s1, t);
+        }
+        GXEnd();
+    }
+    J3DShape::resetVcdVatCache();
+    j3dSys.reinitGX();
+}
+
 // ---------------------------------------------------------------------------------------
 // Shell fur
 
@@ -627,7 +951,19 @@ void draw(J3DModel* model, dKy_tevstr_c* tevstr) {
         return;
     }
     const GXColorS10 l = light_of(tevstr);
-    if (hair_enabled()) {
+    const bool groom = groom_enabled();
+    set_cards_hidden(model, groom);
+    if (groom) {
+        if (!g_hairTexReady) build_hair_tex();
+        if (g_groomFrame != g_frame) {
+            g_groomFrame = g_frame;
+            simulate_groom(model);
+        }
+        l_groomPacket.light = l;
+        dComIfGd_setList();
+        j3dSys.getDrawBuffer(J3DSysDrawBuf_Opa)->entryImm(&l_groomPacket, 0);
+        g_strandsReady = false;
+    } else if (hair_enabled()) {
         if (g_strandFrame != g_frame) {
             g_strandFrame = g_frame;
             simulate_strands(model);

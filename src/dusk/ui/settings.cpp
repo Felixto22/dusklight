@@ -887,6 +887,13 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                             "gallops, stops, turns and jumps, and drift in the wind. Adds hair "
                             "strands to the mane and tail. The straps and stirrups swing too."
             });
+        config_bool_select(leftPane, rightPane, getSettings().game.eponaRealMane,
+            {
+                .key = "Epona Real Mane & Tail",
+                .helpText = "Replaces the flat painted cards of Epona's mane and tail with "
+                            "thousands of real hairs in the same colours, that swing, bounce and "
+                            "blow in the wind. Turn off for the original mane and tail."
+            });
         config_bool_select(leftPane, rightPane, getSettings().game.eponaFur,
             {
                 .key = "Epona Fur",
