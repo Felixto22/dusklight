@@ -191,7 +191,10 @@ void apply_rotation(MtxP m, const V3& th) {
 
 bool model_matches(J3DModel* model) {
     J3DModelData* data = model->getModelData();
-    return data->getJointNum() == 38 && data->getVertexData().getVtxNum() == u32(kEponaPosCount);
+    // hs.bmd: 38 joints, 6 shapes; INF1 reports 1211 vertices (the position array holds
+    // 1213, which is what kEponaPosCount and the shells use).
+    return data->getJointNum() == 38 && data->getShapeNum() == 6 &&
+           data->getVertexData().getVtxNum() == 1211;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -414,7 +417,7 @@ void StrandPacket::draw() {
 // to the same joints (so it follows the animation and the hair-bone springs), and then
 // swings on its own with verlet physics: inertia, gravity, wind, and the pull back to
 // its groomed shape getting weaker toward the tip. Each lock is drawn as a ribbon of
-// eight fine hairs lit along the hair (bright sheen across the strands, darker roots).
+// four fine hairs lit along the hair (bright sheen across the strands, darker roots).
 
 constexpr int kGroomMaxPts = 12;
 
@@ -482,7 +485,7 @@ void simulate_groom(J3DModel* model) {
     }
 }
 
-// Hairs across each lock: 8 hairs of slightly different shade and length (I8, GX tiles).
+// Hairs across each lock: 4 hairs of slightly different shade and length (I8, GX tiles).
 alignas(32) u8 g_hairTex[32 * 64];
 GXTexObj g_hairObj;
 bool g_hairTexReady = false;
@@ -494,17 +497,17 @@ void build_hair_tex() {
         return (seed >> 8) / f32(1 << 24);
     };
     static u8 linear[64][32];
-    for (int hair = 0; hair < 8; hair++) {
+    for (int hair = 0; hair < 4; hair++) {
         const f32 shade = 0.72f + 0.28f * r();
         const f32 end = 0.78f + 0.22f * r();
         const f32 wob = (r() - 0.5f) * 0.9f;
         for (int y = 0; y < 64; y++) {
             const f32 t = (y + 0.5f) / 64.0f;
             const f32 thin = t < end ? 1.0f - 0.55f * (t / end) * (t / end) : 0.0f;
-            for (int x = 0; x < 4; x++) {
-                const f32 c = std::fabs((x + 0.5f + wob * t) - 2.0f) / 2.0f;  // 0 centre .. 1 edge
+            for (int x = 0; x < 8; x++) {
+                const f32 c = std::fabs((x + 0.5f + wob * 2.0f * t) - 4.0f) / 3.2f;  // 0 centre .. 1 edge
                 const f32 v = std::max(0.0f, 1.0f - c / std::max(0.2f, thin)) * shade;
-                linear[y][hair * 4 + x] = u8(std::clamp(v * 255.0f, 0.0f, 255.0f));
+                linear[y][hair * 8 + x] = u8(std::clamp(v * 255.0f, 0.0f, 255.0f));
             }
         }
     }
@@ -686,6 +689,7 @@ void GroomPacket::draw() {
         const f32 w0 = (tail ? 2.6f : 2.2f) * (0.8f + 0.4f * h);
         const f32 w1 = w0 * 0.42f;
         const f32 sheen = 0.85f + 0.3f * hash01(u32(si) * 40503u + 7u);
+        const f32 tone = 0.86f + 0.26f * hash01(u32(si) * 9176u + 3u);  // lock-to-lock shade
         const f32 s0 = 0.0f, s1 = 1.0f;
         GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, u16(n * 2));
         for (int k = 0; k < n; k++) {
@@ -705,7 +709,7 @@ void GroomPacket::draw() {
             const u32 rgb = kGroomPoints[st.first + k].rgb;
             const f32 cr = ((rgb >> 16) & 0xFF) / 255.0f, cg = ((rgb >> 8) & 0xFF) / 255.0f,
                       cb = (rgb & 0xFF) / 255.0f;
-            const f32 m = diff * ao * 0.62f;  // x2 in the TEV
+            const f32 m = diff * ao * 0.62f * tone;  // x2 in the TEV
             const u8 r = u8(std::clamp((cr * m + spec * 0.5f) * lr * 255.0f, 0.0f, 255.0f));
             const u8 gg = u8(std::clamp((cg * m + spec * 0.48f) * lg * 255.0f, 0.0f, 255.0f));
             const u8 bb = u8(std::clamp((cb * m + spec * 0.44f) * lb * 255.0f, 0.0f, 255.0f));
