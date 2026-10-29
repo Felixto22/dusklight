@@ -18,6 +18,7 @@
 #include "f_op/f_op_camera_mng.h"
 #include "dusk/settings.h"
 #include "m_Do/m_Do_mtx.h"
+#include "dusk/interp/frame_interpolation.h"
 
 #include <aurora/dl.hpp>
 
@@ -423,6 +424,7 @@ constexpr int kGroomMaxPts = 12;
 
 struct GroomState {
     V3 p[kGroomMaxPts], q[kGroomMaxPts];
+    V3 t[kGroomMaxPts];  // groomed targets of the last simulated frame
     f32 rest[kGroomMaxPts];
     bool placed = false;
 };
@@ -437,6 +439,32 @@ V3 groom_target(J3DModel* model, const GroomPoint& gp) {
     }
     const f32 b[3] = {gp.b[0] * kGroomScale, gp.b[1] * kGroomScale, gp.b[2] * kGroomScale};
     const V3 pb = xform(model->getAnmMtx(gp.j1), b);
+    const f32 w = gp.w0 / 255.0f;
+    return pa * w + pb * (1.0f - w);
+}
+
+// The joint matrix as it is being presented: with frame interpolation the model is drawn
+// between two simulated frames, and the hair has to follow the same in-between pose.
+// Joint matrices as presented: with frame interpolation the model is drawn between two
+// simulated frames, and the hair must follow the same in-between pose. Cached per draw.
+Mtx g_presMtx[38];
+
+void cache_presented(J3DModel* model) {
+    const int n = std::min<int>(model->getModelData()->getJointNum(), 38);
+    for (int j = 0; j < n; j++) {
+        MtxP m = model->getAnmMtx(j);
+        if (!dusk::interp::lookup_replacement(m, g_presMtx[j])) MTXCopy(m, g_presMtx[j]);
+    }
+}
+
+MtxP presented_mtx(J3DModel*, int j, Mtx) { return g_presMtx[j]; }
+
+V3 groom_target_presented(J3DModel* model, const GroomPoint& gp) {
+    const f32 a[3] = {gp.a[0] * kGroomScale, gp.a[1] * kGroomScale, gp.a[2] * kGroomScale};
+    const V3 pa = xform(g_presMtx[gp.j0], a);
+    if (gp.w0 >= 255) return pa;
+    const f32 b[3] = {gp.b[0] * kGroomScale, gp.b[1] * kGroomScale, gp.b[2] * kGroomScale};
+    const V3 pb = xform(g_presMtx[gp.j1], b);
     const f32 w = gp.w0 / 255.0f;
     return pa * w + pb * (1.0f - w);
 }
@@ -474,6 +502,7 @@ void simulate_groom(J3DModel* model) {
         const bool tail = st.group == 1;
         V3 t[kGroomMaxPts];
         for (int k = 0; k < n; k++) t[k] = groom_target(model, kGroomPoints[st.first + k]);
+        for (int k = 0; k < n; k++) g.t[k] = t[k];
         if (!g.placed || len(t[0] - g.p[0]) > 200.0f) {
             for (int k = 0; k < n; k++) {
                 g.p[k] = g.q[k] = t[k];
@@ -716,6 +745,7 @@ public:
     GXColorS10 light{255, 255, 255, 255};
     J3DMaterial* maneMat = nullptr;
     J3DMaterial* tailMat = nullptr;
+    J3DModel* model = nullptr;
 };
 GroomPacket l_groomPacket;
 
@@ -739,6 +769,7 @@ void GroomPacket::draw() {
     const V3 eye{cam->view.lookat.eye.x, cam->view.lookat.eye.y, cam->view.lookat.eye.z};
     dScnKy_env_light_c* env = dKy_getEnvlight();
     const V3 sun{env->sun_pos.x, env->sun_pos.y, env->sun_pos.z};
+    if (model != nullptr) cache_presented(model);
 
     j3dSys.reinitGX();
     GXSetNumIndStages(0);
@@ -785,6 +816,13 @@ void GroomPacket::draw() {
         const GroomState& g = g_groom[si];
         const int n = std::min<int>(st.count, kGroomMaxPts);
         if (!g.placed || n < 2) continue;
+        // Physics state moved onto the presented (interpolated) pose.
+        V3 P[kGroomMaxPts];
+        for (int k = 0; k < n; k++) {
+            P[k] = model != nullptr
+                       ? g.p[k] + (groom_target_presented(model, kGroomPoints[st.first + k]) - g.t[k])
+                       : g.p[k];
+        }
         const bool tail = st.group == 1;
         if (litGroup != st.group) {
             // The game's own lights for the mane / tail materials.
@@ -813,12 +851,12 @@ void GroomPacket::draw() {
         for (int j = 0; j < m; j++) {
             const int k = (j * (n - 1) + (m - 1) / 2) / (m - 1);
             const f32 t = f32(k) / (n - 1);
-            const V3 a = g.p[std::max(0, k - 1)], b = g.p[std::min(n - 1, k + 1)];
+            const V3 a = P[std::max(0, k - 1)], b = P[std::min(n - 1, k + 1)];
             const V3 dir = norm(b - a);
-            const V3 out = away_from_axis(st.group, g.p[k]);
+            const V3 out = away_from_axis(st.group, P[k]);
             const V3 lat = norm(cross(dir, out));
             const f32 grow = 0.35f + fan * t;  // close together at the root, spread at the tip
-            const V3 pc = g.p[k] + (out * outA + lat * latA) * grow;
+            const V3 pc = P[k] + (out * outA + lat * latA) * grow;
             const V3 view = norm(eye - pc);
             const V3 side = norm(cross(dir, view)) * (0.5f * (w0 + (w1 - w0) * t));
             const V3 L = norm(sun - pc);
@@ -1109,6 +1147,7 @@ void draw(J3DModel* model, dKy_tevstr_c* tevstr) {
         }
         l_groomPacket.light = l;
         l_groomPacket.maneMat = shape_material(model, 2);
+        l_groomPacket.model = model;
         l_groomPacket.tailMat = shape_material(model, 0);
         dComIfGd_setList();
         j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu)->entryImm(&l_groomPacket, 0);

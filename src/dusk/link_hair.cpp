@@ -16,6 +16,7 @@
 #include "d/d_kankyo_wether.h"
 #include "f_op/f_op_camera_mng.h"
 #include "dusk/settings.h"
+#include "dusk/interp/frame_interpolation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -54,6 +55,7 @@ constexpr int kMaxPts = 8;
 
 struct State {
     V3 p[kMaxPts], q[kMaxPts];
+    V3 t[kMaxPts];  // combed targets of the last simulated frame
     f32 rest[kMaxPts];
     bool placed = false;
 };
@@ -85,6 +87,31 @@ V3 target(J3DModel* model, const LinkHairPoint& p) {
     return pa * w + pb * (1.0f - w);
 }
 
+// Joint matrix as presented (frame interpolation draws between two simulated frames).
+// Joint matrices as presented: with frame interpolation the model is drawn between two
+// simulated frames, and the hair must follow the same in-between pose. Cached per draw.
+Mtx g_presMtx[10];
+
+void cache_presented(J3DModel* model) {
+    const int n = std::min<int>(model->getModelData()->getJointNum(), 10);
+    for (int j = 0; j < n; j++) {
+        MtxP m = model->getAnmMtx(j);
+        if (!dusk::interp::lookup_replacement(m, g_presMtx[j])) MTXCopy(m, g_presMtx[j]);
+    }
+}
+
+MtxP presented_mtx(J3DModel*, int j, Mtx) { return g_presMtx[j]; }
+
+V3 target_presented(J3DModel* model, const LinkHairPoint& gp) {
+    const f32 a[3] = {gp.a[0] * kLinkHairScale, gp.a[1] * kLinkHairScale, gp.a[2] * kLinkHairScale};
+    const V3 pa = xform(g_presMtx[gp.j0], a);
+    if (gp.w0 >= 255) return pa;
+    const f32 b[3] = {gp.b[0] * kLinkHairScale, gp.b[1] * kLinkHairScale, gp.b[2] * kLinkHairScale};
+    const V3 pb = xform(g_presMtx[gp.j1], b);
+    const f32 w = gp.w0 / 255.0f;
+    return pa * w + pb * (1.0f - w);
+}
+
 void simulate(J3DModel* model) {
     const LinkHairModel& m = *g_model;
     if (g_state.size() != m.strandCount) {
@@ -104,6 +131,7 @@ void simulate(J3DModel* model) {
         const int n = std::min<int>(st.count, kMaxPts);
         V3 t[kMaxPts];
         for (int k = 0; k < n; k++) t[k] = target(model, kLinkHairPoints[st.first + k]);
+        for (int k = 0; k < n; k++) g.t[k] = t[k];
         if (!g.placed || len(t[0] - g.p[0]) > 100.0f) {
             for (int k = 0; k < n; k++) {
                 g.p[k] = g.q[k] = t[k];
@@ -252,6 +280,7 @@ void HairPacket::draw() {
     J3DMaterial* mat = data->getMaterialNodePointer(g_model->hairMat);
     if (mat == nullptr || data->getTexture() == nullptr) return;
     const V3 eye{cam->view.lookat.eye.x, cam->view.lookat.eye.y, cam->view.lookat.eye.z};
+    if (model != nullptr) cache_presented(model);
 
     j3dSys.reinitGX();
     GXSetNumIndStages(0);
@@ -288,23 +317,30 @@ void HairPacket::draw() {
     J3DDifferedTexMtx::sTexGenBlock = NULL;
 
     const LinkHairModel& m = *g_model;
+    Mtx cs;
+    const f32 cl[3] = {3.0f, -12.0f, 0.0f};
+    const V3 center = xform(presented_mtx(model, 0, cs), cl);
     for (int si = 0; si < m.strandCount; si++) {
         const LinkHairStrand& st = kLinkHairStrands[m.firstStrand + si];
         const State& g = g_state[si];
         const int n = std::min<int>(st.count, kMaxPts);
         if (!g.placed || n < 2) continue;
+        V3 P[kMaxPts];
+        for (int k = 0; k < n; k++) {
+            P[k] = g.p[k] + (target_presented(model, kLinkHairPoints[st.first + k]) - g.t[k]);
+        }
         const f32 w0 = 0.95f * (0.8f + 0.4f * hash01(u32(si) * 2654435761u));
         const f32 w1 = w0 * 0.35f;
         GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, u16(n * 2));
         for (int k = 0; k < n; k++) {
             const f32 t = f32(k) / (n - 1);
-            const V3 a = g.p[std::max(0, k - 1)], b = g.p[std::min(n - 1, k + 1)];
+            const V3 a = P[std::max(0, k - 1)], b = P[std::min(n - 1, k + 1)];
             const V3 dir = norm(b - a);
-            const V3 view = norm(eye - g.p[k]);
+            const V3 view = norm(eye - P[k]);
             const V3 side = norm(cross(dir, view)) * (0.5f * (w0 + (w1 - w0) * t));
-            const V3 nrm = norm(g.p[k] - g_headCenter);
+            const V3 nrm = norm(P[k] - center);
             const LinkHairPoint& hp = kLinkHairPoints[st.first + k];
-            const V3 p0 = g.p[k] - side, p1 = g.p[k] + side;
+            const V3 p0 = P[k] - side, p1 = P[k] + side;
             GXPosition3f32(p0.x, p0.y, p0.z);
             GXNormal3f32(nrm.x, nrm.y, nrm.z);
             GXTexCoord2f32(hp.uv[0], hp.uv[1]);
