@@ -656,6 +656,23 @@ void load_material_lighting(J3DMaterial* mat, bool vertexAlbedo) {
                   GX_AF_NONE);
 }
 
+// Epona's materials all combine as (C0 + K0*(1-RAS) + TEX*RAS) x4 (hs.bmd MAT3), with C0
+// and K0 set by the game each frame; reproduce that in `stage` with our own texture.
+void load_material_tev(J3DMaterial* mat, GXTevStageID stage) {
+    J3DTevBlock* tb = mat != nullptr ? mat->getTevBlock() : nullptr;
+    GXColorS10 c0{0, 0, 0, 255};
+    GXColor k0{0, 0, 0, 255};
+    if (tb != nullptr) {
+        if (J3DGXColorS10* c = tb->getTevColor(0)) c0 = *c;
+        if (J3DGXColor* k = tb->getTevKColor(0)) k0 = *k;
+    }
+    GXSetTevColorS10(GX_TEVREG0, c0);
+    GXSetTevKColor(GX_KCOLOR0, k0);
+    GXSetTevKColorSel(stage, GX_TEV_KCSEL_K0);
+    GXSetTevColorIn(stage, GX_CC_KONST, GX_CC_TEXC, GX_CC_RASC, GX_CC_C0);
+    GXSetTevColorOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_4, GX_TRUE, GX_TEVPREV);
+}
+
 J3DMaterial* shape_material(J3DModel* model, int shapeNo) {
     J3DModelData* data = model->getModelData();
     if (shapeNo >= data->getShapeNum()) return nullptr;
@@ -710,8 +727,6 @@ void GroomPacket::draw() {
     GXSetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
     GXSetNumTevStages(1);
     GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
-    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
-    GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_2, GX_TRUE, GX_TEVPREV);
     GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
     GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
     GXLoadPosMtxImm(j3dSys.getViewMtx(), GX_PNMTX0);
@@ -734,6 +749,7 @@ void GroomPacket::draw() {
             // The game's own lights for the mane / tail materials.
             litGroup = st.group;
             load_material_lighting(tail ? tailMat : maneMat, true);
+            load_material_tev(tail ? tailMat : maneMat, GX_TEVSTAGE0);
         }
         const f32 h = hash01(u32(si) * 2654435761u);
         const f32 w0 = (tail ? 2.6f : 2.2f) * (0.8f + 0.4f * h);
@@ -753,12 +769,14 @@ void GroomPacket::draw() {
             const f32 th = dot(dir, H);
             // A sheen where the half vector is across the strands (hair highlight); the
             // light itself comes from the game's lights through the normal.
-            const f32 spec = std::pow(std::sqrt(std::max(0.0f, 1.0f - th * th)), 48.0f) * 0.22f * sheen;
+            const f32 spec = std::pow(std::sqrt(std::max(0.0f, 1.0f - th * th)), 48.0f) * 0.16f * sheen;
             const f32 ao = 0.66f + 0.34f * std::min(1.0f, t * 1.6f);
             const u32 rgb = kGroomPoints[st.first + k].rgb;
             const f32 cr = ((rgb >> 16) & 0xFF) / 255.0f, cg = ((rgb >> 8) & 0xFF) / 255.0f,
                       cb = (rgb & 0xFF) / 255.0f;
-            const f32 m = ao * 0.5f * tone;  // x2 in the TEV
+            // Vertex colour = the texture colour the original card showed here; the TEV
+            // multiplies it by the game's light x4 like the original material.
+            const f32 m = ao * 1.12f * tone;
             const u8 r = u8(std::clamp((cr * m + spec) * 255.0f, 0.0f, 255.0f));
             const u8 gg = u8(std::clamp((cg * m + spec * 0.95f) * 255.0f, 0.0f, 255.0f));
             const u8 bb = u8(std::clamp((cb * m + spec * 0.88f) * 255.0f, 0.0f, 255.0f));
@@ -806,8 +824,8 @@ FurStyle fur_style() {
     const f32 t = (v - 1) / 9.0f;  // 0 short .. 1 very fluffy
     f.shells = 8 + int(std::round(18.0f * t));
     f.length = 1.2f + 8.8f * t * t + 1.4f * t;
-    f.density = 34.0f / (1.0f + 2.4f * t);
-    f.rootShade = 0.78f - 0.40f * t;  // deep coat gets dark between the tufts
+    f.density = 34.0f / (1.0f + 1.6f * t);
+    f.rootShade = 0.80f - 0.20f * t;  // deep coat a little darker between the tufts
     f.tipShade = 1.08f + 0.12f * t;   // bright fuzzy tips
     f.tufts = v >= 4;
     return f;
@@ -936,11 +954,10 @@ void FurPacket::draw() {
     GXSetTexCoordGen(GX_TEXCOORD1, GX_TG_MTX2x4, GX_TG_TEX0, GX_TEXMTX0);
     load_material_lighting(mat, false);
     GXSetNumTevStages(2);
-    // Body texture x the body's own lighting x the depth shade in C0.
+    // The body's own material formula and lighting, then the depth shade in C1.
     GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
-    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
-    GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
-    GXSetTevColorIn(GX_TEVSTAGE1, GX_CC_ZERO, GX_CC_CPREV, GX_CC_C0, GX_CC_ZERO);
+    load_material_tev(mat, GX_TEVSTAGE0);
+    GXSetTevColorIn(GX_TEVSTAGE1, GX_CC_ZERO, GX_CC_CPREV, GX_CC_C1, GX_CC_ZERO);
     GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_KONST);
     GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
     GXSetTevOrder(GX_TEVSTAGE1, GX_TEXCOORD1, GX_TEXMAP1, GX_COLOR_NULL);
@@ -959,7 +976,7 @@ void FurPacket::draw() {
         const f32 shade = style.rootShade + (style.tipShade - style.rootShade) * std::pow(t, 0.8f);
         const s16 sv = s16(255.0f * shade);
         GXColorS10 c{sv, sv, sv, 255};
-        GXSetTevColorS10(GX_TEVREG0, c);
+        GXSetTevColorS10(GX_TEVREG1, c);
         const f32 cut = style.tufts ? 12.0f + 215.0f * t : 40.0f + 200.0f * t;
         GXSetAlphaCompare(GX_GREATER, u8(cut), GX_AOP_AND, GX_ALWAYS, 0);
 
