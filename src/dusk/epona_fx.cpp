@@ -978,7 +978,13 @@ void FurPacket::draw() {
         GXColorS10 c{sv, sv, sv, 255};
         GXSetTevColorS10(GX_TEVREG1, c);
         const f32 cut = style.tufts ? 12.0f + 215.0f * t : 40.0f + 200.0f * t;
-        GXSetAlphaCompare(GX_GREATER, u8(cut), GX_AOP_AND, GX_ALWAYS, 0);
+        if (k == 0) {
+            // The first layer is a solid undercoat hugging the skin, so nothing of the
+            // original surface ever shows between the hairs.
+            GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+        } else {
+            GXSetAlphaCompare(GX_GREATER, u8(cut), GX_AOP_AND, GX_ALWAYS, 0);
+        }
 
         sp->prepareDraw();
         j3dSys.setVtxPos(g_shellPos[k].data(), kEponaPosCount);
