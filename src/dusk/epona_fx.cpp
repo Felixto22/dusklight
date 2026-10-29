@@ -755,8 +755,9 @@ void GroomPacket::draw() {
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_U16, 15);
     int litGroup = -1;
     // Vertex budget: the first copy of every lock uses up to 8 points, each extra copy 5.
-    // Extra copies are only drawn while they fit (~2 MB at most).
-    constexpr int kBudget = 85000;
+    // Extra copies are only drawn while they fit (~3 MB at most; our build gives aurora a
+    // 16 MB per-frame vertex buffer instead of 5 MB).
+    constexpr int kBudget = 140000;
     constexpr int kBasePts = 8, kCopyPts = 5;
     const int wanted = std::clamp(dusk::getSettings().game.eponaManeVolume.getValue(), 1, 5);
     const int baseVerts = kGroomStrandCount * kBasePts * 2;
