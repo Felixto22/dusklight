@@ -230,7 +230,10 @@ public:
     void draw() override;
     J3DModel* model = nullptr;
 };
-HairPacket l_packet;
+// A few packets in rotation: Link can be drawn more than once in a frame (reflections,
+// special passes), and one packet entered twice would loop the draw list.
+HairPacket l_packets[4];
+u32 l_packetNext = 0;
 
 inline f32 hash01(u32 x) {
     x ^= x >> 16;
@@ -338,9 +341,12 @@ void draw(J3DModel* headModel) {
         g_simFrame = frame;
         simulate(headModel);
     }
-    l_packet.model = headModel;
-    dComIfGd_setList();
-    j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu)->entryImm(&l_packet, 0);
+    // Into whatever translucent list Link is being drawn into right now.
+    J3DDrawBuffer* buf = j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu);
+    if (buf == nullptr) return;
+    HairPacket& pk = l_packets[l_packetNext++ & 3];
+    pk.model = headModel;
+    buf->entryImm(&pk, 0);
 }
 
 }  // namespace dusk::linkhair
