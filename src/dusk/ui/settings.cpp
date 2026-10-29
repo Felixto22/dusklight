@@ -882,6 +882,15 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
         config_int_select(leftPane, rightPane, getSettings().game.ambientOcclusionStrength,
             "Ambient Occlusion Strength", "How dark the ambient occlusion shading gets.", 25, 200, 25,
             [] { return !getSettings().game.ambientOcclusion.getValue(); }, {}, "%");
+        config_bool_select(leftPane, rightPane, getSettings().game.foliageWind,
+            {
+                .key = "Wind in the Trees",
+                .helpText = "Leaves, bushes and vines sway with the game's wind: bent the way it "
+                            "blows, swinging with the gusts, with a quick flutter of the leaves."
+            });
+        config_int_select(leftPane, rightPane, getSettings().game.foliageWindStrength,
+            "Wind Strength", "How strongly the trees move in the wind.", 25, 300, 25,
+            [] { return !getSettings().game.foliageWind.getValue(); }, {}, "%");
         config_bool_select(leftPane, rightPane, getSettings().game.dynamicWater,
             {
                 .key = "Dynamic Water",

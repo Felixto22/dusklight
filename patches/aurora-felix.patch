@@ -1,3 +1,50 @@
+diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
+index 1a312fb..f05ae8c 100644
+--- a/include/dolphin/gx/GXAurora.h
++++ b/include/dolphin/gx/GXAurora.h
+@@ -96,6 +96,13 @@ extern "C" {
+  */
+ #define GX_AURORA_DRAW_INDEXED 0x0041
+ 
++/**
++ * Felix build: foliage wind. Followed by a u32 enable flag and 20 f32: wind direction
++ * in view space (xyz) + strength, view-space up (xyz) + time, then the inverse view
++ * matrix (3 rows of 4). While enabled, alpha-tested draws sway their vertices.
++ */
++#define GX_AURORA_FOLIAGE_WIND 0x0050
++
+ #define GX2_SET_POLYGON_OFFSET 0x1000
+ 
+ 
+@@ -109,6 +116,9 @@ extern "C" {
+  */
+ void GXPushDebugGroup(const char* label);
+ 
++/** Felix build: see GX_AURORA_FOLIAGE_WIND. `params` may be null when disabling. */
++void GXSetFoliageWindAurora(GXBool enable, const f32* params);
++
+ /**
+  * Pop a debug group previously pushed via GXPushDebugGroup().
+  */
+diff --git a/lib/dolphin/gx/GXAurora.cpp b/lib/dolphin/gx/GXAurora.cpp
+index 85a4285..d46cba4 100644
+--- a/lib/dolphin/gx/GXAurora.cpp
++++ b/lib/dolphin/gx/GXAurora.cpp
+@@ -27,6 +27,14 @@ void GXPushDebugGroup(const char* label) {
+ 
+ void GXPopDebugGroup() { GX_WRITE_AURORA(GX_AURORA_DEBUG_GROUP_POP); }
+ 
++void GXSetFoliageWindAurora(GXBool enable, const f32* params) {
++  GX_WRITE_AURORA(GX_AURORA_FOLIAGE_WIND);
++  GX_WRITE_U32(enable ? 1u : 0u);
++  for (int i = 0; i < 20; ++i) {
++    GX_WRITE_F32(params != nullptr ? params[i] : 0.0f);
++  }
++}
++
+ void GXInsertDebugMarker(const char* label) {
+   GX_WRITE_AURORA(GX_AURORA_DEBUG_MARKER_INSERT);
+   GXWriteString(label);
 diff --git a/lib/gfx/resources.hpp b/lib/gfx/resources.hpp
 index 3fdc0ee..aad440a 100644
 --- a/lib/gfx/resources.hpp
@@ -30,8 +77,42 @@ index 029a3d0..48ecaa6 100644
      return std::max<u16>(webgpu::g_graphicsConfig.textureAnisotropy, 1);
    }
  }
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 9c6ffa1..c70814a 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -691,6 +691,16 @@ void handle_aurora(ByteReader& reader) noexcept {
+     g_gxState.texCopyDstWide = true;
+   } else if (subCmd == GX_AURORA_LOAD_COPY_DEST) {
+     g_gxState.texCopyDest = reinterpret_cast<const void*>(reader.read<u64>());
++  } else if (subCmd == GX_AURORA_FOLIAGE_WIND) {
++    g_gxState.foliageEnable = reader.read<u32>() != 0;
++    f32 v[20];
++    for (f32& f : v) f = reader.read<f32>();
++    g_gxState.foliageA = Vec4<float>{v[0], v[1], v[2], v[3]};
++    g_gxState.foliageB = Vec4<float>{v[4], v[5], v[6], v[7]};
++    for (int r = 0; r < 3; ++r) {
++      g_gxState.foliageIV[r] = Vec4<float>{v[8 + r * 4], v[9 + r * 4], v[10 + r * 4], v[11 + r * 4]};
++    }
++    g_gxState.dirty |= DirtyUniform;
+   } else if (subCmd == GX_AURORA_REQUEST_DEPTH_SNAPSHOT) {
+     gfx::depth_peek::request_snapshot();
+   } else if (subCmd == GX_AURORA_BEGIN_OFFSCREEN) {
+diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
+index 1fec701..f3aa73d 100644
+--- a/lib/gx/gx.cpp
++++ b/lib/gx/gx.cpp
+@@ -462,6 +462,8 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
+   }
+   if (g_gxState.alphaCompare) {
+     config.shaderConfig.alphaCompare = g_gxState.alphaCompare;
++    // Felix build: leaves, bushes and vines are alpha-tested; sway them in the wind.
++    config.shaderConfig.foliage = g_gxState.foliageEnable && config.shaderConfig.lineMode == 0 ? 1 : 0;
+   }
+   const auto cullMode = config.shaderConfig.lineMode == 0 ? g_gxState.cullMode : GX_CULL_NONE;
+   const auto [polygonOffset, polygonOffsetScale] = polygon_offset_for_cull_mode(cullMode);
 diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
-index 9e85609..b1cb581 100644
+index 9e85609..88eb48f 100644
 --- a/lib/gx/gx.hpp
 +++ b/lib/gx/gx.hpp
 @@ -47,7 +47,7 @@ constexpr float GX_LARGE_NUMBER = -1048576.0f;
@@ -43,8 +124,37 @@ index 9e85609..b1cb581 100644
  constexpr bool UseReversedZ = true;
  
  constexpr u32 MaxTextures = GX_MAX_TEXMAP;
+@@ -333,6 +333,11 @@ struct GXState {
+   std::array<PnMtx, MaxPnMtx> pnMtx;
+   u32 currentPnMtx;
+   Mat4x4<float> proj;
++  // Felix build: foliage wind (see GX_AURORA_FOLIAGE_WIND)
++  bool foliageEnable = false;
++  Vec4<float> foliageA{};
++  Vec4<float> foliageB{};
++  Vec4<float> foliageIV[3]{};
+   GXProjectionType projType; // for GXGetProjectionv
+   FogState fog;
+   GXCullMode cullMode = GX_CULL_BACK;
+@@ -495,7 +500,7 @@ struct ShaderConfig {
+   u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
+   u8 fogRangeEnabled : 1 = false;
+   u8 pad1 : 5 = 0;
+-  u8 pad2 = 0;
++  u8 foliage = 0; // Felix build: sway with the foliage wind
+   std::array<AttrConfig, MaxVtxAttr> attrs;
+   std::array<TevSwap, MaxTevSwap> tevSwapTable;
+   std::array<TevStage, MaxTevStages> tevStages;
+@@ -532,6 +537,7 @@ struct ShaderInfo {
+   u32 uniformSize = 0;
+   bool usesFog : 1 = false;
+   bool lightingEnabled : 1 = false;
++  bool foliage : 1 = false; // Felix build
+   u8 lineMode : 2 = 0;
+ };
+ struct BindGroupRanges {
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index 9dfbdac..5a6e2ad 100644
+index 9dfbdac..8fffdf5 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
 @@ -820,7 +820,7 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
@@ -72,3 +182,78 @@ index 9dfbdac..5a6e2ad 100644
      } else {
        lightDiffFn = "max(0.0, dot(ldir, mv_nrm))"sv;
      }
+@@ -1024,7 +1024,27 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+                                   attr_load_nbt_slice(config, NbtSlice::T, vidxAttr));
+   }
+ 
+-  if (config.lineMode == 0) {
++  if (config.lineMode == 0 && info.foliage) {
++    // Felix build: foliage wind. Branch sway along the wind (bent downwind, swinging with
++    // gusts) plus a quick leaf flutter, phased by world position so neighbouring leaves
++    // move a little differently. Amplitude grows with the wind strength.
++    vtxXfrAttrsPre += fmt::format(
++        "\n    let mv_pos0 = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
++        "\n    let fw = vec4f(mv_pos0, 1.0);"
++        "\n    let f_wp = vec3f(dot(ubuf.foliage_iv0, fw), dot(ubuf.foliage_iv1, fw), dot(ubuf.foliage_iv2, fw));"
++        "\n    let f_t = ubuf.foliage_b.w;"
++        "\n    let f_s = ubuf.foliage_a.w;"
++        "\n    let f_ph = dot(f_wp.xz, vec2f(0.0123, 0.0097)) + f_wp.y * 0.006;"
++        "\n    let f_big = sin(f_t * (1.1 + f_s * 0.8) + f_ph) * 0.6 + sin(f_t * 0.53 + f_ph * 0.7) * 0.4;"
++        "\n    let f_small = sin(f_t * 7.3 + dot(f_wp, vec3f(0.31, 0.27, 0.29))) * 0.5 +"
++        "\n                  sin(f_t * 11.9 + dot(f_wp, vec3f(0.17, 0.41, 0.23))) * 0.3;"
++        "\n    let f_amp = 1.5 + 9.0 * f_s;"
++        "\n    let f_side = normalize(cross(ubuf.foliage_a.xyz, ubuf.foliage_b.xyz) + vec3f(1e-5, 0.0, 0.0));"
++        "\n    let mv_pos = mv_pos0 + ubuf.foliage_a.xyz * (f_amp * (0.35 + 0.65 * f_big))"
++        "\n               + ubuf.foliage_b.xyz * (f_amp * 0.18 * f_small) + f_side * (f_amp * 0.15 * f_small);"
++        "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;",
++        vtx_attr(config, GX_VA_POS));
++  } else if (config.lineMode == 0) {
+     vtxXfrAttrsPre += fmt::format(
+         "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
+         "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;",
+@@ -1594,6 +1614,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+         "var tex{0}_samp: sampler;",
+         i, i * 2, i * 2 + 1);
+   }
++  if (info.foliage) {
++    uniBufAttrs += "\n    foliage_a: vec4f,\n    foliage_b: vec4f,\n    foliage_iv0: vec4f,\n    foliage_iv1: vec4f,\n    foliage_iv2: vec4f,";
++  }
+   if (!prevColorNormalized && !prevAlphaNormalized) {
+     fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
+   } else if (!prevColorNormalized) {
+diff --git a/lib/gx/shader_info.cpp b/lib/gx/shader_info.cpp
+index c74bd6d..ddca4a9 100644
+--- a/lib/gx/shader_info.cpp
++++ b/lib/gx/shader_info.cpp
+@@ -227,6 +227,7 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
+     info.uniformSize += 4 + 4 + 4 + 4; // line_width, line_aspect_y, line_tex_offset, line_texcoord_mask
+     info.lineMode = config.lineMode;
+   }
++  info.foliage = config.foliage != 0;
+ 
+   for (int attr = 0; attr < config.attrs.size(); attr++) {
+     const auto attrType = config.attrs[attr].attrType;
+@@ -362,6 +363,9 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
+     info.uniformSize += MaxIndTexMtxs * sizeof(Mat2x4<float>);
+   }
+   info.uniformSize += info.sampledTextures.count() * sizeof(Vec4<float>);
++  if (config.foliage) {
++    info.uniformSize += 5 * sizeof(Vec4<float>);
++  }
+   info.uniformSize = gfx::align_uniform(info.uniformSize);
+   if (info.uniformSize > MaxUniformSize) {
+     Log.fatal("Uniform size exceeds maximum: {} > {}", info.uniformSize, MaxUniformSize);
+@@ -490,6 +494,13 @@ static void fill_uniform(ByteBuffer& buf, const ShaderInfo& info) noexcept {
+     }
+     buf.append(texture_size_bias(get_texture(static_cast<GXTexMapID>(i))));
+   }
++  if (info.foliage) {
++    buf.append(g_gxState.foliageA);
++    buf.append(g_gxState.foliageB);
++    buf.append(g_gxState.foliageIV[0]);
++    buf.append(g_gxState.foliageIV[1]);
++    buf.append(g_gxState.foliageIV[2]);
++  }
+ }
+ 
+ gfx::Range build_uniform(const ShaderInfo& info) noexcept {

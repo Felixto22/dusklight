@@ -255,6 +255,8 @@ struct UserSettings {
         ConfigVar<bool> ambientOcclusion;
         ConfigVar<int> ambientOcclusionStrength;
         ConfigVar<int> waterReflections;
+        ConfigVar<bool> foliageWind;
+        ConfigVar<int> foliageWindStrength;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<FrameInterpMode> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;

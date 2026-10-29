@@ -1446,6 +1446,8 @@ set(DUSK_FILES
         src/dusk/link_hair.h
         src/dusk/ssao.cpp
         src/dusk/ssao.h
+        src/dusk/foliage_wind.cpp
+        src/dusk/foliage_wind.h
         src/dusk/water_sim.cpp
         src/dusk/water_sim.h
         src/dusk/globals.cpp

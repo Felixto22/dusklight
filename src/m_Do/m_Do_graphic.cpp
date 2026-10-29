@@ -47,6 +47,7 @@
 
 #if TARGET_PC
 #include "dusk/ssao.h"
+#include "dusk/foliage_wind.h"
 #include "dusk/dusk.h"
 #include "dusk/game_clock.h"
 #include "dusk/gfx.hpp"
@@ -2342,9 +2343,15 @@ int mDoGph_Painter() {
             fapGm_HIO_c::startCpuTimer();
             #endif
 
+#if TARGET_PC
+            dusk::foliage::begin();
+#endif
             GX_DEBUG_GROUP(dComIfGd_drawOpaListBG);
             GX_DEBUG_GROUP(dComIfGd_drawOpaListDarkBG);
             GX_DEBUG_GROUP(dComIfGd_drawOpaListMiddle);
+#if TARGET_PC
+            dusk::foliage::end();
+#endif
 
             if (fapGmHIO_getParticle()) {
                 GX_DEBUG_GROUP(dComIfGp_particle_drawFogPri0_B, &draw_info);
@@ -2404,8 +2411,14 @@ int mDoGph_Painter() {
             fapGm_HIO_c::startCpuTimer();
             #endif
 
+#if TARGET_PC
+            dusk::foliage::begin();
+#endif
             GX_DEBUG_GROUP(dComIfGd_drawXluListBG);
             GX_DEBUG_GROUP(dComIfGd_drawXluListDarkBG);
+#if TARGET_PC
+            dusk::foliage::end();
+#endif
 
             if (fapGmHIO_getParticle()) {
                 GX_DEBUG_GROUP(dComIfGp_particle_drawFogPri0_A, &draw_info);

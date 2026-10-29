@@ -1,0 +1,85 @@
+// Wind in the trees (see foliage_wind.h).
+
+#include "dusk/foliage_wind.h"
+
+#include "JSystem/J3DGraphBase/J3DSys.h"
+#include "d/d_kankyo_wether.h"
+#include "dusk/settings.h"
+
+#include <dolphin/gx/GXAurora.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+
+namespace dusk::foliage {
+namespace {
+
+bool g_active = false;
+f32 g_dirX = 1.0f, g_dirZ = 0.0f, g_pow = 0.0f;
+
+f32 seconds() {
+    using namespace std::chrono;
+    static const auto t0 = steady_clock::now();
+    return duration<f32>(steady_clock::now() - t0).count();
+}
+
+}  // namespace
+
+void begin() {
+    const auto& game = dusk::getSettings().game;
+    if (!game.foliageWind.getValue()) return;
+    const f32 t = seconds();
+
+    // The game's wind, eased so a change of direction doesn't snap the trees.
+    f32 wx = 1.0f, wz = 0.0f;
+    if (cXyz* wv = dKyw_get_wind_vec()) {
+        const f32 l = std::sqrt(wv->x * wv->x + wv->z * wv->z);
+        if (l > 1e-3f) {
+            wx = wv->x / l;
+            wz = wv->z / l;
+        }
+    }
+    g_dirX += (wx - g_dirX) * 0.02f;
+    g_dirZ += (wz - g_dirZ) * 0.02f;
+    const f32 dl = std::sqrt(g_dirX * g_dirX + g_dirZ * g_dirZ);
+    if (dl > 1e-3f) {
+        g_dirX /= dl;
+        g_dirZ /= dl;
+    }
+    g_pow += (std::clamp(dKyw_get_wind_pow(), 0.0f, 1.0f) - g_pow) * 0.02f;
+    // A light breeze even on calm days, with slow gusts on top.
+    const f32 gust = 0.75f + 0.25f * std::sin(t * 0.37f) * std::sin(t * 0.23f + 1.3f);
+    const f32 strength = std::clamp((0.18f + 0.82f * g_pow) * gust *
+                                        (std::clamp(game.foliageWindStrength.getValue(), 0, 300) / 100.0f),
+                                    0.0f, 2.0f);
+
+    MtxP v = j3dSys.getViewMtx();
+    f32 p[20];
+    // Wind direction and world up, in view space.
+    p[0] = v[0][0] * g_dirX + v[0][2] * g_dirZ;
+    p[1] = v[1][0] * g_dirX + v[1][2] * g_dirZ;
+    p[2] = v[2][0] * g_dirX + v[2][2] * g_dirZ;
+    p[3] = strength;
+    p[4] = v[0][1];
+    p[5] = v[1][1];
+    p[6] = v[2][1];
+    p[7] = t;
+    // Inverse view (rotation transposed, translation brought back) for world positions.
+    for (int r = 0; r < 3; r++) {
+        p[8 + r * 4 + 0] = v[0][r];
+        p[8 + r * 4 + 1] = v[1][r];
+        p[8 + r * 4 + 2] = v[2][r];
+        p[8 + r * 4 + 3] = -(v[0][r] * v[0][3] + v[1][r] * v[1][3] + v[2][r] * v[2][3]);
+    }
+    GXSetFoliageWindAurora(GX_TRUE, p);
+    g_active = true;
+}
+
+void end() {
+    if (!g_active) return;
+    GXSetFoliageWindAurora(GX_FALSE, nullptr);
+    g_active = false;
+}
+
+}  // namespace dusk::foliage
