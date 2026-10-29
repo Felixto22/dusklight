@@ -882,6 +882,25 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
         config_int_select(leftPane, rightPane, getSettings().game.ambientOcclusionStrength,
             "Ambient Occlusion Strength", "How dark the ambient occlusion shading gets.", 25, 200, 25,
             [] { return !getSettings().game.ambientOcclusion.getValue(); }, {}, "%");
+        config_bool_select(leftPane, rightPane, getSettings().game.surfaceNormals,
+            {
+                .key = "Surface Relief (Normals)",
+                .helpText = "Floors and walls get relief worked out from their own textures: joints, "
+                            "cracks and stones catch the sun and throw small shadows that change as "
+                            "you move. Turn off if a surface looks wrong."
+            });
+        config_int_select(leftPane, rightPane, getSettings().game.surfaceNormalsStrength,
+            "Relief Strength", "How deep the surface relief looks.", 25, 300, 25,
+            [] { return !getSettings().game.surfaceNormals.getValue(); }, {}, "%");
+        config_bool_select(leftPane, rightPane, getSettings().game.surfaceParallax,
+            {
+                .key = "Surface Depth (Parallax)",
+                .helpText = "Parallax occlusion mapping: stones, bricks and planks look like they have "
+                            "real depth when seen at an angle. Turn off if a surface looks wrong."
+            });
+        config_int_select(leftPane, rightPane, getSettings().game.surfaceParallaxStrength,
+            "Depth Strength", "How deep the parallax effect is.", 25, 300, 25,
+            [] { return !getSettings().game.surfaceParallax.getValue(); }, {}, "%");
         config_bool_select(leftPane, rightPane, getSettings().game.foliageWind,
             {
                 .key = "Wind in the Trees",

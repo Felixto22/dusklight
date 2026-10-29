@@ -8,4 +8,8 @@ namespace dusk::foliage {
 void begin();
 void end();
 
+// Relief on the stage's floors and walls (normals and/or parallax from the textures).
+void begin_relief();
+void end_relief();
+
 }  // namespace dusk::foliage

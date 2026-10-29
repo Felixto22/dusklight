@@ -1,8 +1,8 @@
 diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
-index 1a312fb..f05ae8c 100644
+index 1a312fb..b1707e9 100644
 --- a/include/dolphin/gx/GXAurora.h
 +++ b/include/dolphin/gx/GXAurora.h
-@@ -96,6 +96,13 @@ extern "C" {
+@@ -96,6 +96,20 @@ extern "C" {
   */
  #define GX_AURORA_DRAW_INDEXED 0x0041
  
@@ -13,27 +13,45 @@ index 1a312fb..f05ae8c 100644
 + */
 +#define GX_AURORA_FOLIAGE_WIND 0x0050
 +
++/**
++ * Felix build: relief on stage surfaces. Followed by a u32 flag mask (1 = normals from the
++ * texture, 2 = parallax occlusion) and 8 f32: light direction in view space (xyz) + normal
++ * strength, parallax scale + 3 unused. While set, opaque textured draws get relief.
++ */
++#define GX_AURORA_RELIEF 0x0051
++
  #define GX2_SET_POLYGON_OFFSET 0x1000
  
  
-@@ -109,6 +116,9 @@ extern "C" {
+@@ -109,6 +123,12 @@ extern "C" {
   */
  void GXPushDebugGroup(const char* label);
  
 +/** Felix build: see GX_AURORA_FOLIAGE_WIND. `params` may be null when disabling. */
 +void GXSetFoliageWindAurora(unsigned char enable, const float* params);
 +
++/** Felix build: see GX_AURORA_RELIEF. `params` may be null when flags is 0. */
++void GXSetReliefAurora(unsigned int flags, const float* params);
++
  /**
   * Pop a debug group previously pushed via GXPushDebugGroup().
   */
 diff --git a/lib/dolphin/gx/GXAurora.cpp b/lib/dolphin/gx/GXAurora.cpp
-index 85a4285..d46cba4 100644
+index 85a4285..ea94b63 100644
 --- a/lib/dolphin/gx/GXAurora.cpp
 +++ b/lib/dolphin/gx/GXAurora.cpp
-@@ -27,6 +27,14 @@ void GXPushDebugGroup(const char* label) {
+@@ -27,6 +27,22 @@ void GXPushDebugGroup(const char* label) {
  
  void GXPopDebugGroup() { GX_WRITE_AURORA(GX_AURORA_DEBUG_GROUP_POP); }
  
++void GXSetReliefAurora(unsigned int flags, const float* params) {
++  GX_WRITE_AURORA(GX_AURORA_RELIEF);
++  GX_WRITE_U32(flags);
++  for (int i = 0; i < 8; ++i) {
++    GX_WRITE_F32(params != nullptr ? params[i] : 0.0f);
++  }
++}
++
 +void GXSetFoliageWindAurora(unsigned char enable, const float* params) {
 +  GX_WRITE_AURORA(GX_AURORA_FOLIAGE_WIND);
 +  GX_WRITE_U32(enable ? 1u : 0u);
@@ -78,10 +96,10 @@ index 029a3d0..48ecaa6 100644
    }
  }
 diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
-index 9c6ffa1..c70814a 100644
+index 9c6ffa1..7c4f182 100644
 --- a/lib/gx/command_processor.cpp
 +++ b/lib/gx/command_processor.cpp
-@@ -691,6 +691,16 @@ void handle_aurora(ByteReader& reader) noexcept {
+@@ -691,6 +691,23 @@ void handle_aurora(ByteReader& reader) noexcept {
      g_gxState.texCopyDstWide = true;
    } else if (subCmd == GX_AURORA_LOAD_COPY_DEST) {
      g_gxState.texCopyDest = reinterpret_cast<const void*>(reader.read<u64>());
@@ -95,24 +113,42 @@ index 9c6ffa1..c70814a 100644
 +      g_gxState.foliageIV[r] = Vec4<float>{v[8 + r * 4], v[9 + r * 4], v[10 + r * 4], v[11 + r * 4]};
 +    }
 +    g_gxState.dirty |= DirtyUniform;
++  } else if (subCmd == GX_AURORA_RELIEF) {
++    g_gxState.reliefFlags = reader.read<u32>();
++    f32 v[8];
++    for (f32& f : v) f = reader.read<f32>();
++    g_gxState.reliefA = Vec4<float>{v[0], v[1], v[2], v[3]};
++    g_gxState.reliefB = Vec4<float>{v[4], v[5], v[6], v[7]};
++    g_gxState.dirty |= DirtyUniform;
    } else if (subCmd == GX_AURORA_REQUEST_DEPTH_SNAPSHOT) {
      gfx::depth_peek::request_snapshot();
    } else if (subCmd == GX_AURORA_BEGIN_OFFSCREEN) {
 diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
-index 1fec701..f3aa73d 100644
+index 1fec701..9728375 100644
 --- a/lib/gx/gx.cpp
 +++ b/lib/gx/gx.cpp
-@@ -462,6 +462,8 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
+@@ -462,6 +462,19 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
    }
    if (g_gxState.alphaCompare) {
      config.shaderConfig.alphaCompare = g_gxState.alphaCompare;
 +    // Felix build: leaves, bushes and vines are alpha-tested; sway them in the wind.
 +    config.shaderConfig.foliage = g_gxState.foliageEnable && config.shaderConfig.lineMode == 0 ? 1 : 0;
++  }
++  // Felix build: relief on opaque, textured stage surfaces whose first TEV stage samples a
++  // plain 2D texcoord (no indirect texturing, no alpha test).
++  if (g_gxState.reliefFlags != 0 && config.shaderConfig.lineMode == 0 && !g_gxState.alphaCompare &&
++      g_gxState.numIndStages == 0 && g_gxState.numTevStages > 0) {
++    const auto& st0 = g_gxState.tevStages[0];
++    if (st0.texMapId != GX_TEXMAP_NULL && st0.texCoordId != GX_TEXCOORD_NULL &&
++        st0.texCoordId < g_gxState.numTexGens && g_gxState.tcgs[st0.texCoordId].type == GX_TG_MTX2x4) {
++      config.shaderConfig.reliefNormal = (g_gxState.reliefFlags & 1) != 0;
++      config.shaderConfig.reliefParallax = (g_gxState.reliefFlags & 2) != 0;
++    }
    }
    const auto cullMode = config.shaderConfig.lineMode == 0 ? g_gxState.cullMode : GX_CULL_NONE;
    const auto [polygonOffset, polygonOffsetScale] = polygon_offset_for_cull_mode(cullMode);
 diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
-index 9e85609..88eb48f 100644
+index 9e85609..9fd44dc 100644
 --- a/lib/gx/gx.hpp
 +++ b/lib/gx/gx.hpp
 @@ -47,7 +47,7 @@ constexpr float GX_LARGE_NUMBER = -1048576.0f;
@@ -124,7 +160,7 @@ index 9e85609..88eb48f 100644
  constexpr bool UseReversedZ = true;
  
  constexpr u32 MaxTextures = GX_MAX_TEXMAP;
-@@ -333,6 +333,11 @@ struct GXState {
+@@ -333,6 +333,15 @@ struct GXState {
    std::array<PnMtx, MaxPnMtx> pnMtx;
    u32 currentPnMtx;
    Mat4x4<float> proj;
@@ -133,28 +169,37 @@ index 9e85609..88eb48f 100644
 +  Vec4<float> foliageA{};
 +  Vec4<float> foliageB{};
 +  Vec4<float> foliageIV[3]{};
++  // Felix build: surface relief (see GX_AURORA_RELIEF)
++  u32 reliefFlags = 0;
++  Vec4<float> reliefA{};
++  Vec4<float> reliefB{};
    GXProjectionType projType; // for GXGetProjectionv
    FogState fog;
    GXCullMode cullMode = GX_CULL_BACK;
-@@ -495,7 +500,7 @@ struct ShaderConfig {
+@@ -494,8 +503,10 @@ struct ShaderConfig {
+   u8 vtxStride = 0;
    u8 lineMode : 2 = 0; // 1 = GX_LINES, 2 = GX_LINESTRIP, 3 = GX_POINTS
    u8 fogRangeEnabled : 1 = false;
-   u8 pad1 : 5 = 0;
+-  u8 pad1 : 5 = 0;
 -  u8 pad2 = 0;
++  u8 reliefNormal : 1 = false;   // Felix build
++  u8 reliefParallax : 1 = false; // Felix build
++  u8 pad1 : 3 = 0;
 +  u8 foliage = 0; // Felix build: sway with the foliage wind
    std::array<AttrConfig, MaxVtxAttr> attrs;
    std::array<TevSwap, MaxTevSwap> tevSwapTable;
    std::array<TevStage, MaxTevStages> tevStages;
-@@ -532,6 +537,7 @@ struct ShaderInfo {
+@@ -532,6 +543,8 @@ struct ShaderInfo {
    u32 uniformSize = 0;
    bool usesFog : 1 = false;
    bool lightingEnabled : 1 = false;
 +  bool foliage : 1 = false; // Felix build
++  bool relief : 1 = false;  // Felix build
    u8 lineMode : 2 = 0;
  };
  struct BindGroupRanges {
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index 9dfbdac..8fffdf5 100644
+index 9dfbdac..74462f0 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
 @@ -820,7 +820,7 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
@@ -211,39 +256,145 @@ index 9dfbdac..8fffdf5 100644
      vtxXfrAttrsPre += fmt::format(
          "\n    let mv_pos = vec4f({}, 1.0) * ubuf.postex_mtx[in_pnmtxidx];"
          "\n    out.pos = vec4f(mv_pos, 1.0) * ubuf.proj;",
-@@ -1594,6 +1614,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1300,6 +1320,86 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+       fragmentFnPre += fmt::format("\n    var tex{0}_uv = in.tex{0}_uv.xy;", i);
+     }
+   }
++  // Felix build: relief from the surface's own texture. Height = luminance of the first
++  // stage's texture; tangent frame from screen-space derivatives. Parallax occlusion moves
++  // that texcoord along the view direction; the normal from the height gradient shades the
++  // final colour against the light.
++  if (info.relief) {
++    const u32 rc = underlying(config.tevStages[0].texCoordId);
++    const u32 rm = underlying(config.tevStages[0].texMapId);
++    const auto H = [rm](std::string_view uv, std::string_view lod) {
++      return fmt::format("dot(textureSampleLevel(tex{0}, tex{0}_samp, {1}, {2}).rgb, vec3f(0.299, 0.587, 0.114))",
++                         rm, uv, lod);
++    };
++    fragmentFnPre += fmt::format(R"""(
++    let r_uv0 = tex{0}_uv;
++    let r_size = vec2f(textureDimensions(tex{1}));
++    let r_vp = in.relief_vpos;
++    let r_dp1 = dpdx(r_vp);
++    let r_dp2 = dpdy(r_vp);
++    let r_du1 = dpdx(r_uv0);
++    let r_du2 = dpdy(r_uv0);
++    var r_n = normalize(cross(r_dp1, r_dp2));
++    if (dot(r_n, -r_vp) < 0.0) {{ r_n = -r_n; }}
++    let r_p2 = cross(r_dp2, r_n);
++    let r_p1 = cross(r_n, r_dp1);
++    var r_t = r_p2 * r_du1.x + r_p1 * r_du2.x;
++    var r_b = r_p2 * r_du1.y + r_p1 * r_du2.y;
++    let r_im = inverseSqrt(max(max(dot(r_t, r_t), dot(r_b, r_b)), 1e-20));
++    r_t = r_t * r_im;
++    r_b = r_b * r_im;
++    let r_lod = max(0.0, log2(max(length(r_du1 * r_size), length(r_du2 * r_size)))) + 0.5;
++    let r_v = normalize(-r_vp);
++    var r_uv = r_uv0;)""",
++                                 rc, rm);
++    if (config.reliefParallax) {
++      fragmentFnPre += fmt::format(R"""(
++    {{
++      let vts = vec3f(dot(r_v, r_t), dot(r_v, r_b), dot(r_v, r_n));
++      let steps = 12.0;
++      let delta = vts.xy / max(vts.z, 0.3) * ubuf.relief_b.x / steps;
++      var depth_cur = 0.0;
++      var prev_uv = r_uv0;
++      var prev_gap = 0.0;
++      var uvp = r_uv0;
++      var found = false;
++      for (var k = 0; k < 12; k++) {{
++        if (!found) {{
++          let d = 1.0 - {0};
++          let gap = d - depth_cur;
++          if (gap <= 0.0) {{
++            let w = prev_gap / max(prev_gap - gap, 1e-5);
++            uvp = mix(prev_uv, uvp, w);
++            found = true;
++          }} else {{
++            prev_uv = uvp;
++            prev_gap = gap;
++            uvp = uvp - delta;
++            depth_cur = depth_cur + 1.0 / steps;
++          }}
++        }}
++      }}
++      r_uv = uvp;
++      tex{1}_uv = r_uv;
++    }})""",
++                                   H("uvp", "r_lod"), rc);
++    }
++    if (config.reliefNormal) {
++      fragmentFnPre += fmt::format(R"""(
++    let r_px = vec2f(1.0, 0.0) * exp2(r_lod - 0.5) / r_size.x;
++    let r_py = vec2f(0.0, 1.0) * exp2(r_lod - 0.5) / r_size.y;
++    let r_hx = {0} - {1};
++    let r_hy = {2} - {3};
++    let r_h = {4};
++    let r_np = normalize(r_n - (r_t * r_hx + r_b * r_hy) * (4.0 * ubuf.relief_a.w));
++    let r_l = ubuf.relief_a.xyz;
++    var relief_shade = 1.0 + 1.4 * (max(dot(r_np, r_l), 0.0) - max(dot(r_n, r_l), 0.0))
++                       + (r_h - 0.5) * 0.25 * ubuf.relief_a.w;
++    relief_shade = clamp(relief_shade, 0.55, 1.5);)""",
++                                   H("r_uv + r_px", "r_lod"), H("r_uv - r_px", "r_lod"), H("r_uv + r_py", "r_lod"),
++                                   H("r_uv - r_py", "r_lod"), H("r_uv", "r_lod"));
++    }
++  }
+   // Multiple TEV stages may reference the same indirect stage,
+   // so we sample each indirect texture only once.
+   const auto ind_scale = [](const GXIndTexScale s) -> std::string_view {
+@@ -1527,6 +1627,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+   if (info.usesPTTexMtx.any()) {
+     uniBufAttrs += fmt::format("\n    postmtx: array<mat3x4f, {}>,", MaxPTTexMtx);
+   }
++  if (info.relief && config.reliefNormal) {
++    fragmentFn += "\n    prev = vec4f(prev.rgb * relief_shade, prev.a);";
++  }
+   if (info.usesFog) {
+     uniformPre +=
+         "\n"
+@@ -1594,6 +1697,14 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
          "var tex{0}_samp: sampler;",
          i, i * 2, i * 2 + 1);
    }
 +  if (info.foliage) {
 +    uniBufAttrs += "\n    foliage_a: vec4f,\n    foliage_b: vec4f,\n    foliage_iv0: vec4f,\n    foliage_iv1: vec4f,\n    foliage_iv2: vec4f,";
 +  }
++  if (info.relief) {
++    uniBufAttrs += "\n    relief_a: vec4f,\n    relief_b: vec4f,";
++    vtxOutAttrs += fmt::format("\n    @location({}) relief_vpos: vec3f,", vtxOutIdx++);
++    vtxXfrAttrs += "\n    out.relief_vpos = mv_pos;";
++  }
    if (!prevColorNormalized && !prevAlphaNormalized) {
      fragmentFn += "\n    prev = tev_overflow_vec4f(prev);";
    } else if (!prevColorNormalized) {
 diff --git a/lib/gx/shader_info.cpp b/lib/gx/shader_info.cpp
-index c74bd6d..ddca4a9 100644
+index c74bd6d..9fc35a2 100644
 --- a/lib/gx/shader_info.cpp
 +++ b/lib/gx/shader_info.cpp
-@@ -227,6 +227,7 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
+@@ -227,6 +227,8 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
      info.uniformSize += 4 + 4 + 4 + 4; // line_width, line_aspect_y, line_tex_offset, line_texcoord_mask
      info.lineMode = config.lineMode;
    }
 +  info.foliage = config.foliage != 0;
++  info.relief = config.reliefNormal || config.reliefParallax;
  
    for (int attr = 0; attr < config.attrs.size(); attr++) {
      const auto attrType = config.attrs[attr].attrType;
-@@ -362,6 +363,9 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
+@@ -362,6 +364,12 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
      info.uniformSize += MaxIndTexMtxs * sizeof(Mat2x4<float>);
    }
    info.uniformSize += info.sampledTextures.count() * sizeof(Vec4<float>);
 +  if (config.foliage) {
 +    info.uniformSize += 5 * sizeof(Vec4<float>);
 +  }
++  if (config.reliefNormal || config.reliefParallax) {
++    info.uniformSize += 2 * sizeof(Vec4<float>);
++  }
    info.uniformSize = gfx::align_uniform(info.uniformSize);
    if (info.uniformSize > MaxUniformSize) {
      Log.fatal("Uniform size exceeds maximum: {} > {}", info.uniformSize, MaxUniformSize);
-@@ -490,6 +494,13 @@ static void fill_uniform(ByteBuffer& buf, const ShaderInfo& info) noexcept {
+@@ -490,6 +498,17 @@ static void fill_uniform(ByteBuffer& buf, const ShaderInfo& info) noexcept {
      }
      buf.append(texture_size_bias(get_texture(static_cast<GXTexMapID>(i))));
    }
@@ -253,6 +404,10 @@ index c74bd6d..ddca4a9 100644
 +    buf.append(g_gxState.foliageIV[0]);
 +    buf.append(g_gxState.foliageIV[1]);
 +    buf.append(g_gxState.foliageIV[2]);
++  }
++  if (info.relief) {
++    buf.append(g_gxState.reliefA);
++    buf.append(g_gxState.reliefB);
 +  }
  }
  

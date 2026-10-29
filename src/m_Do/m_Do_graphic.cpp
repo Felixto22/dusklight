@@ -2345,11 +2345,13 @@ int mDoGph_Painter() {
 
 #if TARGET_PC
             dusk::foliage::begin();
+            dusk::foliage::begin_relief();
 #endif
             GX_DEBUG_GROUP(dComIfGd_drawOpaListBG);
             GX_DEBUG_GROUP(dComIfGd_drawOpaListDarkBG);
             GX_DEBUG_GROUP(dComIfGd_drawOpaListMiddle);
 #if TARGET_PC
+            dusk::foliage::end_relief();
             dusk::foliage::end();
 #endif
 

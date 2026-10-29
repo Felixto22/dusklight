@@ -257,6 +257,10 @@ struct UserSettings {
         ConfigVar<int> waterReflections;
         ConfigVar<bool> foliageWind;
         ConfigVar<int> foliageWindStrength;
+        ConfigVar<bool> surfaceNormals;
+        ConfigVar<int> surfaceNormalsStrength;
+        ConfigVar<bool> surfaceParallax;
+        ConfigVar<int> surfaceParallaxStrength;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<FrameInterpMode> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;

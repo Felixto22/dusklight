@@ -92,6 +92,10 @@ UserSettings g_userSettings = {
         .waterReflections {"game.waterReflections", 100},
         .foliageWind {"game.foliageWind", true},
         .foliageWindStrength {"game.foliageWindStrength", 100},
+        .surfaceNormals {"game.surfaceNormals", true},
+        .surfaceNormalsStrength {"game.surfaceNormalsStrength", 100},
+        .surfaceParallax {"game.surfaceParallax", true},
+        .surfaceParallaxStrength {"game.surfaceParallaxStrength", 100},
         .enableTextureReplacements {"game.enableTextureReplacements", true},
         .enableFrameInterpolation {"game.enableFrameInterpolation", FrameInterpMode::Off},
         .internalResolutionScale {"game.internalResolutionScale", 0},
@@ -343,6 +347,10 @@ void registerSettings() {
     Register(g_userSettings.game.waterReflections);
     Register(g_userSettings.game.foliageWind);
     Register(g_userSettings.game.foliageWindStrength);
+    Register(g_userSettings.game.surfaceNormals);
+    Register(g_userSettings.game.surfaceNormalsStrength);
+    Register(g_userSettings.game.surfaceParallax);
+    Register(g_userSettings.game.surfaceParallaxStrength);
     Register(g_userSettings.game.enableTextureReplacements,
         [](const bool&, const bool&) { texture_replacements::reload(); });
     Register(g_userSettings.game.internalResolutionScale,

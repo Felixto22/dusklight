@@ -3,6 +3,7 @@
 #include "dusk/foliage_wind.h"
 
 #include "JSystem/J3DGraphBase/J3DSys.h"
+#include "d/d_kankyo.h"
 #include "d/d_kankyo_wether.h"
 #include "dusk/settings.h"
 
@@ -80,6 +81,49 @@ void end() {
     if (!g_active) return;
     GXSetFoliageWindAurora(GX_FALSE, nullptr);
     g_active = false;
+}
+
+namespace {
+bool g_reliefActive = false;
+}
+
+void begin_relief() {
+    const auto& game = dusk::getSettings().game;
+    u32 flags = 0;
+    if (game.surfaceNormals.getValue()) flags |= 1;
+    if (game.surfaceParallax.getValue()) flags |= 2;
+    if (flags == 0) return;
+    MtxP v = j3dSys.getViewMtx();
+    // Sun (or moon) direction from the camera, in view space.
+    const f32 ex = -(v[0][0] * v[0][3] + v[1][0] * v[1][3] + v[2][0] * v[2][3]);
+    const f32 ey = -(v[0][1] * v[0][3] + v[1][1] * v[1][3] + v[2][1] * v[2][3]);
+    const f32 ez = -(v[0][2] * v[0][3] + v[1][2] * v[1][3] + v[2][2] * v[2][3]);
+    dScnKy_env_light_c* env = dKy_getEnvlight();
+    f32 dx = env->sun_pos.x - ex, dy = env->sun_pos.y - ey, dz = env->sun_pos.z - ez;
+    f32 l = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (l < 1.0f || dy < 0.1f * l) {
+        dx = 0.3f;
+        dy = 1.0f;
+        dz = 0.2f;
+        l = std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    dx /= l;
+    dy /= l;
+    dz /= l;
+    f32 p[8] = {};
+    p[0] = v[0][0] * dx + v[0][1] * dy + v[0][2] * dz;
+    p[1] = v[1][0] * dx + v[1][1] * dy + v[1][2] * dz;
+    p[2] = v[2][0] * dx + v[2][1] * dy + v[2][2] * dz;
+    p[3] = std::clamp(game.surfaceNormalsStrength.getValue(), 0, 300) / 100.0f;
+    p[4] = 0.035f * std::clamp(game.surfaceParallaxStrength.getValue(), 0, 300) / 100.0f;
+    GXSetReliefAurora(flags, p);
+    g_reliefActive = true;
+}
+
+void end_relief() {
+    if (!g_reliefActive) return;
+    GXSetReliefAurora(0, nullptr);
+    g_reliefActive = false;
 }
 
 }  // namespace dusk::foliage
