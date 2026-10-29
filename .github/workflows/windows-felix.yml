@@ -47,19 +47,15 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      # Room for the extra geometry the Felix mods draw every frame (Epona's hair, Link's
-      # hair, dynamic water): aurora's per-frame buffers default to 5 MB verts / 2 MB indices.
-      - name: Enlarge aurora per-frame buffers
+      # Felix build changes to aurora (patches/aurora-felix.patch): per-frame buffers big
+      # enough for the hair/water geometry (16 MB vertices, 8 MB indices), per-pixel
+      # lighting, and full anisotropic filtering on every texture.
+      - name: Patch aurora
         shell: pwsh
         run: |
-          $f = "extern/aurora/lib/gfx/resources.hpp"
-          $t = Get-Content $f -Raw
-          $t = $t -replace 'VertexBufferSize = 5242880;', 'VertexBufferSize = 16777216;'
-          $t = $t -replace 'IndexBufferSize = 2097152;', 'IndexBufferSize = 8388608;'
-          Set-Content $f $t -NoNewline
-          if (-not (Select-String -Path $f -Pattern 'VertexBufferSize = 16777216;' -Quiet)) { echo "::error::aurora patch failed"; exit 1 }
-          if (-not (Select-String -Path $f -Pattern 'IndexBufferSize = 8388608;' -Quiet)) { echo "::error::aurora patch failed"; exit 1 }
-          echo "::notice::aurora buffers: 16 MB vertices, 8 MB indices"
+          git -C extern/aurora apply --whitespace=nowarn ../../patches/aurora-felix.patch
+          if ($LASTEXITCODE -ne 0) { echo "::error::aurora patch failed"; exit 1 }
+          echo "::notice::aurora patched (buffers, per-pixel lighting, anisotropic filtering)"
 
       - name: Enable Visual Studio environment
         uses: ilammy/msvc-dev-cmd@v1

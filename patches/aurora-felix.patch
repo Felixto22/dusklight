@@ -1,0 +1,74 @@
+diff --git a/lib/gfx/resources.hpp b/lib/gfx/resources.hpp
+index 3fdc0ee..aad440a 100644
+--- a/lib/gfx/resources.hpp
++++ b/lib/gfx/resources.hpp
+@@ -5,8 +5,8 @@
+ namespace aurora::gfx {
+ inline constexpr bool UseTextureBuffer = true;
+ inline constexpr uint64_t UniformBufferSize = 25165824; // 24 MiB
+-inline constexpr uint64_t VertexBufferSize = 5242880;   // 5 MiB
+-inline constexpr uint64_t IndexBufferSize = 2097152;    // 2 MiB
++inline constexpr uint64_t VertexBufferSize = 16777216;   // 5 MiB
++inline constexpr uint64_t IndexBufferSize = 8388608;    // 2 MiB
+ inline constexpr uint64_t StorageBufferSize = 8388608;  // 8 MiB
+ inline constexpr uint64_t TextureUploadSize = 25165824; // 24 MiB
+ 
+diff --git a/lib/gfx/texture.cpp b/lib/gfx/texture.cpp
+index 029a3d0..48ecaa6 100644
+--- a/lib/gfx/texture.cpp
++++ b/lib/gfx/texture.cpp
+@@ -88,10 +88,10 @@ u16 wgpu_aniso(GXAnisotropy aniso) {
+     DEFAULT_FATAL("invalid aniso {}", static_cast<int>(aniso));
+   case GX_ANISO_1:
+   case GX_MAX_ANISOTROPY:
+-    return 1;
+   case GX_ANISO_2:
+-    return std::max<u16>(webgpu::g_graphicsConfig.textureAnisotropy / 2, 1);
+   case GX_ANISO_4:
++    // Felix build: full anisotropic filtering on every mipmapped texture (the game only
++    // asks for it on a few), so ground and walls stay sharp at grazing angles.
+     return std::max<u16>(webgpu::g_graphicsConfig.textureAnisotropy, 1);
+   }
+ }
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index 9e85609..b1cb581 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -47,7 +47,7 @@ constexpr float GX_LARGE_NUMBER = -1048576.0f;
+ namespace aurora::gx {
+ constexpr bool EnableNormalVisualization = false;
+ constexpr bool EnableDebugPrints = false;
+-constexpr bool UsePerPixelLighting = false;
++constexpr bool UsePerPixelLighting = true;
+ constexpr bool UseReversedZ = true;
+ 
+ constexpr u32 MaxTextures = GX_MAX_TEXMAP;
+diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
+index 9dfbdac..5a6e2ad 100644
+--- a/lib/gx/shader.cpp
++++ b/lib/gx/shader.cpp
+@@ -820,7 +820,7 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
+           var dist_attn = dot(light.dist_att, vec3f(1.0, dist, dist2));
+           attn = max(0.0, cos_attn / dist_attn);)""");
+   } else if (cc.attnFn == GX_AF_SPEC) {
+-    std::string_view normal = UsePerPixelLighting ? "in.mv_nrm"sv : "mv_nrm"sv;
++    std::string_view normal = UsePerPixelLighting ? "normalize(in.mv_nrm)"sv : "mv_nrm"sv;
+     std::string dist_attn = diffFn != GX_DF_NONE
+                                 ? "max(0.0, dot(normalize(light.dist_att), vec3f(1.0, attn, attn * attn)));"
+                                 : "max(0.0, dot(light.dist_att, vec3f(1.0, attn, attn * attn)));";
+@@ -836,13 +836,13 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
+     lightDiffFn = "1.0"sv;
+   } else if (diffFn == GX_DF_SIGN) {
+     if (UsePerPixelLighting) {
+-      lightDiffFn = "dot(ldir, in.mv_nrm)"sv;
++      lightDiffFn = "dot(ldir, normalize(in.mv_nrm))"sv;
+     } else {
+       lightDiffFn = "dot(ldir, mv_nrm)"sv;
+     }
+   } else if (diffFn == GX_DF_CLAMP) {
+     if (UsePerPixelLighting) {
+-      lightDiffFn = "max(0.0, dot(ldir, in.mv_nrm))"sv;
++      lightDiffFn = "max(0.0, dot(ldir, normalize(in.mv_nrm)))"sv;
+     } else {
+       lightDiffFn = "max(0.0, dot(ldir, mv_nrm))"sv;
+     }
