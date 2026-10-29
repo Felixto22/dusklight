@@ -57,6 +57,7 @@
 #include "dusk/interp/sight.h"
 #include "dusk/settings.h"
 #include "dusk/link_hair.h"
+#include "dusk/wolf_fur.h"
 #include "res/Object/Alink.h"
 #include <cstring>
 #include <helpers/string.hpp>
@@ -19613,6 +19614,11 @@ int daAlink_c::draw() {
     if (checkWolf()) {
         dComIfGd_setListDark();
         modelDraw(mpLinkModel, isPlayerNoDraw);
+#if TARGET_PC
+        if (!isPlayerNoDraw) {
+            dusk::wolffur::draw(mpLinkModel);
+        }
+#endif
 
         if (dComIfGs_isEventBit(dSv_event_flag_c::M_011)) {
             for (int i = 0; i < 4; i++) {

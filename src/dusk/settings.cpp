@@ -96,6 +96,11 @@ UserSettings g_userSettings = {
         .surfaceNormalsStrength {"game.surfaceNormalsStrength", 100},
         .surfaceParallax {"game.surfaceParallax", true},
         .surfaceParallaxStrength {"game.surfaceParallaxStrength", 100},
+        .wolfFur {"game.wolfFur", true},
+        .wolfFurLength {"game.wolfFurLength", 6},
+        .wetSurfaces {"game.wetSurfaces", true},
+        .godRays {"game.godRays", true},
+        .godRaysStrength {"game.godRaysStrength", 100},
         .enableTextureReplacements {"game.enableTextureReplacements", true},
         .enableFrameInterpolation {"game.enableFrameInterpolation", FrameInterpMode::Off},
         .internalResolutionScale {"game.internalResolutionScale", 0},
@@ -351,6 +356,11 @@ void registerSettings() {
     Register(g_userSettings.game.surfaceNormalsStrength);
     Register(g_userSettings.game.surfaceParallax);
     Register(g_userSettings.game.surfaceParallaxStrength);
+    Register(g_userSettings.game.wolfFur);
+    Register(g_userSettings.game.wolfFurLength);
+    Register(g_userSettings.game.wetSurfaces);
+    Register(g_userSettings.game.godRays);
+    Register(g_userSettings.game.godRaysStrength);
     Register(g_userSettings.game.enableTextureReplacements,
         [](const bool&, const bool&) { texture_replacements::reload(); });
     Register(g_userSettings.game.internalResolutionScale,

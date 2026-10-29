@@ -261,6 +261,11 @@ struct UserSettings {
         ConfigVar<int> surfaceNormalsStrength;
         ConfigVar<bool> surfaceParallax;
         ConfigVar<int> surfaceParallaxStrength;
+        ConfigVar<bool> wolfFur;
+        ConfigVar<int> wolfFurLength;
+        ConfigVar<bool> wetSurfaces;
+        ConfigVar<bool> godRays;
+        ConfigVar<int> godRaysStrength;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<FrameInterpMode> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;

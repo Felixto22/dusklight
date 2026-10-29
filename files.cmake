@@ -1448,6 +1448,10 @@ set(DUSK_FILES
         src/dusk/ssao.h
         src/dusk/foliage_wind.cpp
         src/dusk/foliage_wind.h
+        src/dusk/wolf_fur.cpp
+        src/dusk/wolf_fur.h
+        src/dusk/godrays.cpp
+        src/dusk/godrays.h
         src/dusk/water_sim.cpp
         src/dusk/water_sim.h
         src/dusk/globals.cpp

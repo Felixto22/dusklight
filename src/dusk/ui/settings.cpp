@@ -882,6 +882,22 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
         config_int_select(leftPane, rightPane, getSettings().game.ambientOcclusionStrength,
             "Ambient Occlusion Strength", "How dark the ambient occlusion shading gets.", 25, 200, 25,
             [] { return !getSettings().game.ambientOcclusion.getValue(); }, {}, "%");
+        config_bool_select(leftPane, rightPane, getSettings().game.godRays,
+            {
+                .key = "Light Shafts",
+                .helpText = "Rays of sunlight streaming past trees, cliffs and buildings when you "
+                            "look toward the sun."
+            });
+        config_int_select(leftPane, rightPane, getSettings().game.godRaysStrength,
+            "Light Shafts Strength", "How bright the light shafts are.", 25, 300, 25,
+            [] { return !getSettings().game.godRays.getValue(); }, {}, "%");
+        config_bool_select(leftPane, rightPane, getSettings().game.wetSurfaces,
+            {
+                .key = "Wet Surfaces in Rain",
+                .helpText = "When it rains, the ground and walls slowly get wet: darker and glossy, "
+                            "with puddles that mirror the sky and ripple with the drops. They dry "
+                            "slowly after the rain stops."
+            });
         config_bool_select(leftPane, rightPane, getSettings().game.surfaceNormals,
             {
                 .key = "Surface Relief (Normals)",
@@ -952,6 +968,15 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
             "How long and fluffy Epona's coat is. 1-3: a short, realistic horse coat. "
             "4-10: longer, softer fur in pointed tufts, up to a plush, cartoon-style coat.",
             1, 10, 1, [] { return !getSettings().game.eponaFur.getValue(); });
+        config_bool_select(leftPane, rightPane, getSettings().game.wolfFur,
+            {
+                .key = "Wolf Link Fur",
+                .helpText = "A real coat of fur on Link's wolf form, in the colours of the original "
+                            "and lit the same way."
+            });
+        config_int_select(leftPane, rightPane, getSettings().game.wolfFurLength,
+            "Wolf Fur Length", "1 is a short coat, 10 a long, fluffy one.", 1, 10, 1,
+            [] { return !getSettings().game.wolfFur.getValue(); });
         config_bool_select(leftPane, rightPane, getSettings().game.linkRealHair,
             {
                 .key = "Link Real Hair",

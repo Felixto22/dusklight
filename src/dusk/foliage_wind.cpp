@@ -85,6 +85,22 @@ void end() {
 
 namespace {
 bool g_reliefActive = false;
+f32 g_wetness = 0.0f;
+f32 g_lastT = -1.0f;
+
+// Surfaces get wet while it rains (about 15 s to soak) and dry slowly (about 90 s).
+f32 update_wetness() {
+    const f32 t = seconds();
+    const f32 dt = g_lastT < 0.0f ? 0.0f : std::clamp(t - g_lastT, 0.0f, 0.5f);
+    g_lastT = t;
+    const f32 target = std::clamp(g_env_light.raincnt / 200.0f, 0.0f, 1.0f);
+    if (target > g_wetness) {
+        g_wetness = std::min(target, g_wetness + dt / 15.0f);
+    } else {
+        g_wetness = std::max(target, g_wetness - dt / 90.0f);
+    }
+    return g_wetness;
+}
 }
 
 void begin_relief() {
@@ -92,6 +108,8 @@ void begin_relief() {
     u32 flags = 0;
     if (game.surfaceNormals.getValue()) flags |= 1;
     if (game.surfaceParallax.getValue()) flags |= 2;
+    const f32 wet = update_wetness();
+    if (game.wetSurfaces.getValue() && wet > 0.01f) flags |= 4;
     if (flags == 0) return;
     MtxP v = j3dSys.getViewMtx();
     // Sun (or moon) direction from the camera, in view space.
@@ -110,12 +128,22 @@ void begin_relief() {
     dx /= l;
     dy /= l;
     dz /= l;
-    f32 p[8] = {};
+    f32 p[16] = {};
     p[0] = v[0][0] * dx + v[0][1] * dy + v[0][2] * dz;
     p[1] = v[1][0] * dx + v[1][1] * dy + v[1][2] * dz;
     p[2] = v[2][0] * dx + v[2][1] * dy + v[2][2] * dz;
     p[3] = std::clamp(game.surfaceNormalsStrength.getValue(), 0, 300) / 100.0f;
     p[4] = 0.035f * std::clamp(game.surfaceParallaxStrength.getValue(), 0, 300) / 100.0f;
+    p[5] = wet;
+    p[6] = seconds();
+    // World up in view space, and the sky colour wet ground reflects.
+    p[8] = v[0][1];
+    p[9] = v[1][1];
+    p[10] = v[2][1];
+    const GXColorS10 sky = env->vrbox_sky_col;
+    p[12] = std::clamp(sky.r / 255.0f, 0.0f, 1.0f);
+    p[13] = std::clamp(sky.g / 255.0f, 0.0f, 1.0f);
+    p[14] = std::clamp(sky.b / 255.0f, 0.0f, 1.0f);
     GXSetReliefAurora(flags, p);
     g_reliefActive = true;
 }

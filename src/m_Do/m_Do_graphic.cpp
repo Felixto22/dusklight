@@ -48,6 +48,7 @@
 #if TARGET_PC
 #include "dusk/ssao.h"
 #include "dusk/foliage_wind.h"
+#include "dusk/godrays.h"
 #include "dusk/dusk.h"
 #include "dusk/game_clock.h"
 #include "dusk/gfx.hpp"
@@ -2451,6 +2452,9 @@ int mDoGph_Painter() {
 
             j3dSys.reinitGX();
             GXSetClipMode(GX_CLIP_ENABLE);
+#if TARGET_PC
+            dusk::godrays::apply();
+#endif
 
 #if DEBUG
             if (dJcame_c::get()) {
