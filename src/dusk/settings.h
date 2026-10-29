@@ -249,6 +249,7 @@ struct UserSettings {
         ConfigVar<bool> eponaFur;
         ConfigVar<int> eponaFurLength;
         ConfigVar<bool> eponaRealMane;
+        ConfigVar<int> eponaManeVolume;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<FrameInterpMode> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;

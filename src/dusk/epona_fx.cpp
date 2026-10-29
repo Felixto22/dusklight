@@ -752,6 +752,7 @@ void GroomPacket::draw() {
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
     int litGroup = -1;
+    const int copies = std::clamp(dusk::getSettings().game.eponaManeVolume.getValue(), 1, 5);
     GXLoadTexObj(&g_hairObj, GX_TEXMAP0);
     GXSetNumTexGens(1);
     GXSetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
@@ -781,26 +782,40 @@ void GroomPacket::draw() {
             load_material_lighting(tail ? tailMat : maneMat, true);
             load_material_tev(tail ? tailMat : maneMat, GX_TEVSTAGE0);
         }
-        const f32 h = hash01(u32(si) * 2654435761u);
-        const f32 w0 = (tail ? 2.6f : 2.2f) * (0.8f + 0.4f * h);
+        // Volume: every simulated lock is drawn several times, each copy pushed out from
+        // the neck / tail and sideways by its own amount, fanning out toward the tips.
+        for (int c = 0; c < copies; c++) {
+        const u32 cs = u32(si) * 2654435761u + u32(c) * 0x9E3779B9u;
+        const f32 h = hash01(cs);
+        const f32 w0 = (tail ? 2.9f : 2.5f) * (0.8f + 0.4f * h);
         const f32 w1 = w0 * 0.42f;
-        const f32 sheen = 0.85f + 0.3f * hash01(u32(si) * 40503u + 7u);
-        const f32 tone = 0.86f + 0.26f * hash01(u32(si) * 9176u + 3u);  // lock-to-lock shade
+        const f32 sheen = 0.85f + 0.3f * hash01(cs * 40503u + 7u);
+        const f32 tone = 0.84f + 0.30f * hash01(cs * 9176u + 3u);  // lock-to-lock shade
+        f32 outA = 0.0f, latA = 0.0f, fan = 0.0f;
+        if (c > 0) {
+            outA = tail ? (hash01(cs + 11u) * 2.0f - 1.0f) * 3.5f : hash01(cs + 11u) * 4.0f;
+            latA = (hash01(cs + 23u) * 2.0f - 1.0f) * (tail ? 3.5f : 2.5f);
+            fan = tail ? 1.8f : 1.2f;
+        }
         const f32 s0 = 0.0f, s1 = 1.0f;
         GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, u16(n * 2));
         for (int k = 0; k < n; k++) {
             const f32 t = f32(k) / (n - 1);
             const V3 a = g.p[std::max(0, k - 1)], b = g.p[std::min(n - 1, k + 1)];
             const V3 dir = norm(b - a);
-            const V3 view = norm(eye - g.p[k]);
+            const V3 out = away_from_axis(st.group, g.p[k]);
+            const V3 lat = norm(cross(dir, out));
+            const f32 grow = 0.35f + fan * t;  // close together at the root, spread at the tip
+            const V3 pc = g.p[k] + (out * outA + lat * latA) * grow;
+            const V3 view = norm(eye - pc);
             const V3 side = norm(cross(dir, view)) * (0.5f * (w0 + (w1 - w0) * t));
-            const V3 L = norm(sun - g.p[k]);
+            const V3 L = norm(sun - pc);
             const V3 H = norm(L + view);
             const f32 th = dot(dir, H);
             // A sheen where the half vector is across the strands (hair highlight); the
             // light itself comes from the game's lights through the normal.
             const f32 spec = std::pow(std::sqrt(std::max(0.0f, 1.0f - th * th)), 48.0f) * 0.16f * sheen;
-            const f32 ao = 0.66f + 0.34f * std::min(1.0f, t * 1.6f);
+            const f32 ao = (0.66f + 0.34f * std::min(1.0f, t * 1.6f)) * (c == 0 ? 0.9f : 1.0f);
             const u32 rgb = kGroomPoints[st.first + k].rgb;
             const f32 cr = ((rgb >> 16) & 0xFF) / 255.0f, cg = ((rgb >> 8) & 0xFF) / 255.0f,
                       cb = (rgb & 0xFF) / 255.0f;
@@ -811,8 +826,8 @@ void GroomPacket::draw() {
             const u8 gg = u8(std::clamp((cg * m + spec * 0.95f) * 255.0f, 0.0f, 255.0f));
             const u8 bb = u8(std::clamp((cb * m + spec * 0.88f) * 255.0f, 0.0f, 255.0f));
             // Away from the neck / tail like the original cards, a little toward the sky.
-            const V3 nrm = norm(away_from_axis(st.group, g.p[k]) + V3{0.0f, 0.5f, 0.0f});
-            const V3 p0 = g.p[k] - side, p1 = g.p[k] + side;
+            const V3 nrm = norm(out + V3{0.0f, 0.5f, 0.0f});
+            const V3 p0 = pc - side, p1 = pc + side;
             GXPosition3f32(p0.x, p0.y, p0.z);
             GXNormal3f32(nrm.x, nrm.y, nrm.z);
             GXColor4u8(r, gg, bb, 255);
@@ -823,6 +838,7 @@ void GroomPacket::draw() {
             GXTexCoord2f32(s1, t);
         }
         GXEnd();
+        }
     }
     restore_gx();
 }

@@ -894,6 +894,11 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                             "thousands of real hairs in the same colours, that swing, bounce and "
                             "blow in the wind. Turn off for the original mane and tail."
             });
+        config_int_select(leftPane, rightPane, getSettings().game.eponaManeVolume,
+            "Epona Mane Volume",
+            "How thick Epona's real mane and tail are: 1 is the original amount of hair, "
+            "higher values add more locks around them, up to a very full mane.",
+            1, 5, 1, [] { return !getSettings().game.eponaRealMane.getValue(); });
         config_bool_select(leftPane, rightPane, getSettings().game.eponaFur,
             {
                 .key = "Epona Fur",
