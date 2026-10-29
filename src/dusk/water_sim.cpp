@@ -8,10 +8,9 @@
 //  - ambient: wind-driven swell over all the water within ~48 m, from the game's wind.
 // A water map sampled from the collision every 2 m gives the real surface height under
 // every sheet (rivers slope), and each sim keeps its own finer land/water mask so waves
-// reflect off shores, rocks and pillars. Each sheet draws only what the waves change on a
-// flat surface: light on the slope facing the sun and shadow behind it, crests brighter
-// than troughs, the sky reflection and sun glint, foam on steep or tall crests. Inner
-// layers fade out at their edges and the outer layers fade in under them.
+// reflect off shores, rocks and pillars. The sheets redraw the stage's own water, bent by
+// the waves, with screen-space reflections, sun glint and foam (see "Drawing" below).
+// Inner layers fade out at their edges and the outer layers fade in under them.
 
 #include "dusk/water_sim.h"
 
@@ -26,7 +25,13 @@
 #include "f_op/f_op_camera_mng.h"
 #include "dusk/settings.h"
 
+#include <aurora/gfx.hpp>
+#include <dolphin/gx/GXAurora.h>
+#include <webgpu/webgpu_cpp.h>
+
 #include <algorithm>
+#include <array>
+#include <mutex>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -481,185 +486,351 @@ inline void swell_at(f32 x, f32 z, f32& h, f32& gx, f32& gz) {
 // ---------------------------------------------------------------------------------------
 // Drawing
 
-struct Light {
-    cXyz sun;
-    cXyz eye;
-    f32 strength;
-    GXColor tint;
+// ---------------------------------------------------------------------------------------
+// Drawing
+//
+// The sheets no longer paint a colour of their own. After the stage's water has been
+// drawn, the frame (colour + depth) is snapshotted and the sheets redraw it: the picture of
+// the original water is shifted by the waves' slope (refraction), mixed with real-time
+// screen-space reflections of whatever is on screen above the water (Link, Epona, trees,
+// cliffs) by the Fresnel term, plus the sun glint and foam on steep crests. With flat water
+// the result is the original water itself (plus reflections). Samples that would come from
+// something in front of the water (Link's arm, a leg) are never used.
+
+struct WaterVtx {
+    f32 pos[3];
+    f32 nrm[3];
+    f32 alpha;
+    f32 foam;
+};
+static_assert(sizeof(WaterVtx) == 32);
+
+struct WaterParams {
+    f32 vp[4][4];   // view-projection rows (reversed-Z clip, as aurora draws)
+    f32 eye[4];     // xyz, time
+    f32 sun[4];     // direction xyz, glint strength
+    f32 sky[4];     // fallback reflection colour, rgb
+    f32 prj[4];     // p22, p23, width, height
+    f32 misc[4];    // refraction strength, reflection strength, foam strength, -
+};
+static_assert(sizeof(WaterParams) == 144);
+
+struct WaterPayload {
+    WGPUTextureView color;
+    WGPUTextureView depth;
+    u32 vtxOffset, vtxSize;
+    u32 idxOffset, idxCount;
+    u32 uniOffset;
+    u32 width, height;
 };
 
-Light current_light() {
-    Light l;
-    dScnKy_env_light_c* env = dKy_getEnvlight();
-    camera_process_class* cam = dComIfGp_getCamera(0);
-    l.eye = cam != NULL ? cam->view.lookat.eye : cXyz(g_map.originX, g_fine.waterY + 200.0f, g_map.originZ);
-    cXyz d = env->sun_pos - l.eye;
-    if (d.abs() < 1.0f || d.y < 0.05f * d.abs()) d.set(0.3f, 1.0f, 0.2f);
-    l.sun = d.normZP();
-    const f32 t = env->getDaytime();
-    const bool day = t >= 90.0f && t < 285.0f;
-    l.strength = day ? 1.0f : 0.45f;
-    if (dKy_darkworld_check()) l.strength *= 0.7f;
-    l.tint = day ? GXColor{255, 250, 236, 255} : GXColor{190, 210, 255, 255};
-    return l;
+constexpr const char* kWaterShader = R"(
+struct P {
+    vp0: vec4f, vp1: vec4f, vp2: vec4f, vp3: vec4f,
+    eye: vec4f, sun: vec4f, sky: vec4f, prj: vec4f, misc: vec4f,
+};
+@group(0) @binding(0) var<uniform> u: P;
+@group(0) @binding(1) var scene: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var depth_tex: texture_2d<f32>;
+
+struct VI {
+    @location(0) pos: vec3f,
+    @location(1) nrm: vec3f,
+    @location(2) alpha: f32,
+    @location(3) foam: f32,
+};
+struct VO {
+    @builtin(position) pos: vec4f,
+    @location(0) wpos: vec3f,
+    @location(1) nrm: vec3f,
+    @location(2) alpha: f32,
+    @location(3) foam: f32,
+};
+
+fn project(p: vec3f) -> vec4f {
+    let h = vec4f(p, 1.0);
+    return vec4f(dot(u.vp0, h), dot(u.vp1, h), dot(u.vp2, h), dot(u.vp3, h));
 }
 
-struct Shader {
-    Light L;
-    f32 spec0, fres0, lam0;
-
-    explicit Shader(const Light& light, f32 y) : L(light) {
-        const cXyz mid(g_map.originX + (WaterMap::M / 2) * WaterMap::S, y,
-                       g_map.originZ + (WaterMap::M / 2) * WaterMap::S);
-        const cXyz v0 = (L.eye - mid).normZP();
-        const cXyz hv0 = (L.sun + v0).normZP();
-        spec0 = std::pow(std::max(0.0f, hv0.y), 80.0f);
-        fres0 = std::pow(1.0f - std::max(0.0f, v0.y), 5.0f);
-        lam0 = std::max(0.0f, L.sun.y);
-    }
-
-    // h: height above the flat surface; gx/gz: slope; lap: curvature (sim only);
-    // presenceGain: how strongly calm slopes show; fade: layer weight at this point.
-    GXColor shade(f32 wx, f32 wy, f32 wz, f32 h, f32 gx, f32 gz, f32 lap, f32 presenceGain,
-                  f32 fade) const {
-        constexpr f32 NORMAL_BOOST = 2.2f;
-        const f32 bx = gx * NORMAL_BOOST, bz = gz * NORMAL_BOOST;
-        const cXyz n = cXyz(-bx, 1.0f, -bz).normZP();
-        const cXyz v = cXyz(L.eye.x - wx, L.eye.y - wy, L.eye.z - wz).normZP();
-        const cXyz hv = (L.sun + v).normZP();
-        const f32 spec = std::pow(std::max(0.0f, n.x * hv.x + n.y * hv.y + n.z * hv.z), 80.0f);
-        const f32 nv = std::max(0.0f, n.x * v.x + n.y * v.y + n.z * v.z);
-        const f32 fres = std::pow(1.0f - nv, 5.0f);
-        const f32 lam = std::max(0.0f, n.x * L.sun.x + n.y * L.sun.y + n.z * L.sun.z);
-        const f32 slope = std::sqrt(bx * bx + bz * bz);
-        const f32 d = (lam - lam0) * 2.4f + (fres - fres0) * 1.3f + (spec - spec0) * 2.6f +
-                      h * 0.045f - lap * 0.05f;
-        const f32 foam = std::max(0.0f, std::min(1.0f, (slope - 0.9f) * 1.2f + (h - 9.0f) * 0.08f));
-        const f32 presence = std::min(1.0f, (std::fabs(h) * 0.5f + slope * 5.0f) * presenceGain);
-        f32 a = (0.22f + std::min(1.0f, std::fabs(d)) * 0.75f) * presence + foam * 0.65f;
-        a = std::min(a, 0.92f) * fade * L.strength;
-        GXColor c;
-        if (foam > 0.05f) {
-            c = GXColor{u8(L.tint.r * 0.96f), u8(L.tint.g * 0.97f), L.tint.b, 0};
-        } else if (d >= 0.0f) {
-            const f32 m = 0.72f + 0.28f * std::min(1.0f, d);
-            c = GXColor{u8(L.tint.r * m), u8(L.tint.g * m), u8(L.tint.b * m), 0};
-        } else {
-            const f32 m = std::min(1.0f, -d);
-            c = GXColor{u8(28 - 18 * m), u8(58 - 30 * m), u8(66 - 30 * m), 0};
-        }
-        c.a = u8(std::max(0.0f, std::min(255.0f, a * 255.0f)));
-        return c;
-    }
-};
-
-void setup_gx() {
-    j3dSys.reinitGX();
-    GXSetNumIndStages(0);
-    GXClearVtxDesc();
-    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-    GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
-    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
-    GXSetNumChans(1);
-    GXSetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE,
-                  GX_AF_NONE);
-    GXSetNumTexGens(0);
-    GXSetNumTevStages(1);
-    GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
-    GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
-    GXLoadPosMtxImm(j3dSys.getViewMtx(), GX_PNMTX0);
-    GXSetCurrentMtx(GX_PNMTX0);
-    GXSetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_SET);
-    GXSetCullMode(GX_CULL_NONE);
-    GXSetZMode(GX_ENABLE, GX_LEQUAL, GX_DISABLE);
-    GXSetAlphaCompare(GX_GREATER, 0, GX_AOP_OR, GX_GREATER, 0);
-    GXSetFog(GX_FOG_NONE, 0.0f, 0.0f, 0.0f, 0.0f, GXColor{0, 0, 0, 0});
+@vertex fn vs_main(in: VI) -> VO {
+    var o: VO;
+    o.pos = project(in.pos);
+    o.wpos = in.pos;
+    o.nrm = in.nrm;
+    o.alpha = in.alpha;
+    o.foam = in.foam;
+    return o;
 }
 
-struct Vert {
-    f32 x, y, z;
-    GXColor c;
-    bool ok;
-};
+fn lin(d: f32) -> f32 { return u.prj.y / (d - u.prj.x); }   // view-space z (negative)
 
-// Emit a grid as triangle strips, skipping runs where neither row has anything to show.
-template <typename F>
-void draw_grid(int nx, int nz, F&& vertex) {
-    std::vector<Vert> row0(nx), row1(nx);
-    for (int x = 0; x < nx; x++) row0[x] = vertex(x, 0);
-    for (int z = 0; z + 1 < nz; z++) {
-        for (int x = 0; x < nx; x++) row1[x] = vertex(x, z + 1);
-        int x = 0;
-        while (x < nx) {
-            while (x < nx && !((row0[x].ok && row0[x].c.a) || (row1[x].ok && row1[x].c.a))) x++;
-            int end = x;
-            while (end < nx && (row0[end].ok || row1[end].ok)) end++;
-            const int a = std::max(0, x - 1), b = std::min(nx, end + 1);
-            if (b - a >= 2) {
-                GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, (b - a) * 2);
-                for (int i = a; i < b; i++) {
-                    const Vert& p = row0[i];
-                    const Vert& q = row1[i];
-                    GXPosition3f32(p.x, p.y, p.z);
-                    GXColor4u8(p.c.r, p.c.g, p.c.b, p.ok ? p.c.a : 0);
-                    GXPosition3f32(q.x, q.y, q.z);
-                    GXColor4u8(q.c.r, q.c.g, q.c.b, q.ok ? q.c.a : 0);
-                }
-                GXEnd();
+fn depth_at(uv: vec2f) -> f32 {
+    let sz = vec2i(textureDimensions(depth_tex));
+    let c = clamp(vec2i(uv * vec2f(sz)), vec2i(0), sz - vec2i(1));
+    return textureLoad(depth_tex, c, 0).r;
+}
+
+@fragment fn fs_main(in: VO) -> @location(0) vec4f {
+    let size = u.prj.zw;
+    let uv = in.pos.xy / size;
+    let n = normalize(in.nrm);
+    let V = normalize(u.eye.xyz - in.wpos);
+    let my_d = in.pos.z;
+    let dist = max(-lin(my_d), 50.0);
+
+    // Refraction: shift the picture of the water by the wave slope (less with distance).
+    var ruv = uv + n.xz * vec2f(1.0, -1.0) * (u.misc.x * 900.0 / dist) / size.y;
+    ruv = clamp(ruv, vec2f(0.0), vec2f(1.0));
+    if (depth_at(ruv) > my_d + 1e-5) { ruv = uv; }   // that pixel is in front of the water
+    let refr = textureSampleLevel(scene, samp, ruv, 0.0).rgb;
+
+    // Screen-space reflection along the reflected view ray.
+    let R = reflect(-V, n);
+    var hit = false;
+    var huv = vec2f(0.0);
+    let jit = fract(52.9829189 * fract(dot(in.pos.xy, vec2f(0.06711056, 0.00583715))));
+    if (R.y > 0.0) {
+        for (var i = 0; i < 32; i++) {
+            let f = (f32(i) + jit) / 32.0;
+            let t = 4.0 + f * f * 3000.0;
+            let c = project(in.wpos + R * t);
+            if (c.w <= 0.0) { break; }
+            let ndc = c.xy / c.w;
+            let suv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+            if (any(suv < vec2f(0.0)) || any(suv > vec2f(1.0))) { break; }
+            let rd = c.z / c.w;
+            let sd = depth_at(suv);
+            if (sd > rd) {   // the scene is in front of the ray point
+                let gap = lin(sd) - lin(rd);
+                if (gap < 25.0 + t * 0.06) { hit = true; huv = suv; }
+                break;
             }
-            x = std::max(end, x + 1);
         }
-        row0.swap(row1);
+    }
+    var refl = u.sky.rgb;
+    var reflW = 0.5;
+    if (hit) {
+        refl = textureSampleLevel(scene, samp, huv, 0.0).rgb;
+        let e = min(min(huv.x, 1.0 - huv.x), min(huv.y, 1.0 - huv.y));
+        reflW = clamp(e * 12.0, 0.0, 1.0);
+    }
+    let ndv = clamp(dot(n, V), 0.0, 1.0);
+    let fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
+    var col = mix(refr, refl, clamp(fres * u.misc.y * reflW, 0.0, 0.85));
+
+    // Sun glint on the waves and foam on steep crests.
+    let H = normalize(u.sun.xyz + V);
+    let spec = pow(max(dot(n, H), 0.0), 220.0) * u.sun.w;
+    col += vec3f(spec);
+    col = mix(col, vec3f(0.92, 0.95, 0.97) * (0.55 + 0.45 * u.sun.w), clamp(in.foam * u.misc.z, 0.0, 0.8));
+    return vec4f(col, in.alpha);
+}
+)";
+
+struct WaterGpu {
+    std::mutex mutex;
+    u64 layoutKey = ~0ull;
+    wgpu::RenderPipeline pipeline;
+    wgpu::BindGroupLayout bgl;
+    wgpu::Sampler sampler;
+};
+WaterGpu g_gpu;
+aurora::gfx::DrawTypeId g_drawType = aurora::gfx::InvalidDrawType;
+
+void build_pipeline(const aurora::gfx::DrawContext& ctx) {
+    const auto& layout = ctx.layout;
+    if (g_gpu.pipeline && g_gpu.layoutKey == layout.key) return;
+    const wgpu::ShaderSourceWGSL src{wgpu::ShaderSourceWGSL::Init{.code = kWaterShader}};
+    const wgpu::ShaderModuleDescriptor md{.nextInChain = &src, .label = "Felix water"};
+    const auto module = ctx.device.CreateShaderModule(&md);
+    if (!g_gpu.bgl) {
+        const wgpu::BindGroupLayoutEntry e[4] = {
+            {.binding = 0,
+             .visibility = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment,
+             .buffer = {.type = wgpu::BufferBindingType::Uniform, .minBindingSize = sizeof(WaterParams)}},
+            {.binding = 1,
+             .visibility = wgpu::ShaderStage::Fragment,
+             .texture = {.sampleType = wgpu::TextureSampleType::Float,
+                         .viewDimension = wgpu::TextureViewDimension::e2D}},
+            {.binding = 2,
+             .visibility = wgpu::ShaderStage::Fragment,
+             .sampler = {.type = wgpu::SamplerBindingType::Filtering}},
+            {.binding = 3,
+             .visibility = wgpu::ShaderStage::Fragment,
+             .texture = {.sampleType = wgpu::TextureSampleType::UnfilterableFloat,
+                         .viewDimension = wgpu::TextureViewDimension::e2D}},
+        };
+        const wgpu::BindGroupLayoutDescriptor bd{.label = "Felix water", .entryCount = 4, .entries = e};
+        g_gpu.bgl = ctx.device.CreateBindGroupLayout(&bd);
+        const wgpu::SamplerDescriptor sd{
+            .label = "Felix water",
+            .addressModeU = wgpu::AddressMode::ClampToEdge,
+            .addressModeV = wgpu::AddressMode::ClampToEdge,
+            .magFilter = wgpu::FilterMode::Linear,
+            .minFilter = wgpu::FilterMode::Linear,
+        };
+        g_gpu.sampler = ctx.device.CreateSampler(&sd);
+    }
+    const wgpu::PipelineLayoutDescriptor pld{.bindGroupLayoutCount = 1, .bindGroupLayouts = &g_gpu.bgl};
+    const auto pl = ctx.device.CreatePipelineLayout(&pld);
+    const wgpu::VertexAttribute attrs[4] = {
+        {.format = wgpu::VertexFormat::Float32x3, .offset = 0, .shaderLocation = 0},
+        {.format = wgpu::VertexFormat::Float32x3, .offset = 12, .shaderLocation = 1},
+        {.format = wgpu::VertexFormat::Float32, .offset = 24, .shaderLocation = 2},
+        {.format = wgpu::VertexFormat::Float32, .offset = 28, .shaderLocation = 3},
+    };
+    const wgpu::VertexBufferLayout vbl{
+        .stepMode = wgpu::VertexStepMode::Vertex, .arrayStride = sizeof(WaterVtx), .attributeCount = 4,
+        .attributes = attrs};
+    const wgpu::BlendState blend{
+        .color = {.operation = wgpu::BlendOperation::Add,
+                  .srcFactor = wgpu::BlendFactor::SrcAlpha,
+                  .dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha},
+        .alpha = {.operation = wgpu::BlendOperation::Add,
+                  .srcFactor = wgpu::BlendFactor::Zero,
+                  .dstFactor = wgpu::BlendFactor::One},
+    };
+    std::array<wgpu::ColorTargetState, aurora::gfx::MaxColorAttachments> targets{};
+    for (uint32_t i = 0; i < layout.colorAttachmentCount; i++) {
+        targets[i] = {.format = layout.colorAttachments[i].format, .writeMask = wgpu::ColorWriteMask::None};
+    }
+    targets[aurora::gfx::SceneColorAttachmentIndex].blend = &blend;
+    targets[aurora::gfx::SceneColorAttachmentIndex].writeMask =
+        wgpu::ColorWriteMask::Red | wgpu::ColorWriteMask::Green | wgpu::ColorWriteMask::Blue;
+    const wgpu::FragmentState fs{
+        .module = module, .entryPoint = "fs_main", .targetCount = layout.colorAttachmentCount,
+        .targets = targets.data()};
+    const wgpu::DepthStencilState ds{
+        .format = layout.depthStencilFormat,
+        .depthWriteEnabled = false,
+        .depthCompare = aurora::gfx::uses_reversed_z() ? wgpu::CompareFunction::GreaterEqual
+                                                      : wgpu::CompareFunction::LessEqual,
+    };
+    const wgpu::RenderPipelineDescriptor pd{
+        .label = "Felix water",
+        .layout = pl,
+        .vertex = wgpu::VertexState{.module = module, .entryPoint = "vs_main", .bufferCount = 1, .buffers = &vbl},
+        .primitive = wgpu::PrimitiveState{.topology = wgpu::PrimitiveTopology::TriangleList},
+        .depthStencil = layout.depthStencilFormat != wgpu::TextureFormat::Undefined ? &ds : nullptr,
+        .multisample = wgpu::MultisampleState{.count = layout.sampleCount},
+        .fragment = &fs,
+    };
+    g_gpu.pipeline = ctx.device.CreateRenderPipeline(&pd);
+    g_gpu.layoutKey = layout.key;
+}
+
+void draw_cb(const aurora::gfx::DrawContext& ctx, const wgpu::RenderPassEncoder& pass, const void* payload,
+             size_t payloadSize, void*) {
+    if (payloadSize != sizeof(WaterPayload)) return;
+    WaterPayload p;
+    std::memcpy(&p, payload, sizeof(p));
+    if (p.color == nullptr || p.depth == nullptr || p.idxCount == 0) return;
+    std::lock_guard lock{g_gpu.mutex};
+    build_pipeline(ctx);
+    if (!g_gpu.pipeline) return;
+    const wgpu::TextureView color{p.color}, depth{p.depth};
+    const wgpu::BindGroupEntry e[4] = {
+        {.binding = 0, .buffer = ctx.uniformBuffer, .offset = p.uniOffset, .size = sizeof(WaterParams)},
+        {.binding = 1, .textureView = color},
+        {.binding = 2, .sampler = g_gpu.sampler},
+        {.binding = 3, .textureView = depth},
+    };
+    const wgpu::BindGroupDescriptor bd{.layout = g_gpu.bgl, .entryCount = 4, .entries = e};
+    const auto bg = ctx.device.CreateBindGroup(&bd);
+    pass.SetPipeline(g_gpu.pipeline);
+    pass.SetBindGroup(0, bg);
+    pass.SetVertexBuffer(0, ctx.vertexBuffer, p.vtxOffset, p.vtxSize);
+    pass.SetIndexBuffer(ctx.indexBuffer, wgpu::IndexFormat::Uint32, p.idxOffset, p.idxCount * 4);
+    pass.SetViewport(0.0f, 0.0f, f32(p.width), f32(p.height), 0.0f, 1.0f);
+    pass.SetScissorRect(0, 0, p.width, p.height);
+    pass.DrawIndexed(p.idxCount);
+}
+
+std::vector<WaterVtx> g_vtx;
+std::vector<u32> g_idx;
+
+// Add a grid: `vertex(x, z, out)` fills a vertex and returns whether it is on water.
+template <typename F>
+void add_grid(int nx, int nz, F&& vertex) {
+    const u32 base = u32(g_vtx.size());
+    std::vector<u8> ok(size_t(nx) * nz);
+    for (int z = 0; z < nz; z++) {
+        for (int x = 0; x < nx; x++) {
+            WaterVtx v{};
+            ok[size_t(z) * nx + x] = vertex(x, z, v) ? 1 : 0;
+            g_vtx.push_back(v);
+        }
+    }
+    for (int z = 0; z + 1 < nz; z++) {
+        for (int x = 0; x + 1 < nx; x++) {
+            const u32 a = z * nx + x, b = a + 1, c = a + nx, d = c + 1;
+            if (!(ok[a] || ok[b] || ok[c] || ok[d])) continue;
+            const auto has = [&](u32 i) { return g_vtx[base + i].alpha > 0.0f; };
+            if (!(has(a) || has(b) || has(c) || has(d))) continue;
+            g_idx.insert(g_idx.end(), {base + a, base + c, base + b, base + b, base + c, base + d});
+        }
     }
 }
 
-void draw_sim(const Sim& s, const Shader& sh, const Sim* inner) {
-    draw_grid(s.n - 2, s.n - 2, [&](int gx, int gz) -> Vert {
+void fill_vertex(WaterVtx& v, f32 x, f32 y, f32 z, f32 gx, f32 gz, f32 h, f32 alpha) {
+    constexpr f32 NORMAL_BOOST = 2.2f;
+    const f32 bx = gx * NORMAL_BOOST, bz = gz * NORMAL_BOOST;
+    const f32 l = std::sqrt(bx * bx + 1.0f + bz * bz);
+    v.pos[0] = x;
+    v.pos[1] = y;
+    v.pos[2] = z;
+    v.nrm[0] = -bx / l;
+    v.nrm[1] = 1.0f / l;
+    v.nrm[2] = -bz / l;
+    v.alpha = alpha;
+    const f32 slope = std::sqrt(bx * bx + bz * bz);
+    v.foam = std::max(0.0f, std::min(1.0f, (slope - 0.9f) * 1.2f + (h - 9.0f) * 0.08f));
+}
+
+void add_sim(const Sim& s, const Sim* inner) {
+    add_grid(s.n - 2, s.n - 2, [&](int gx, int gz, WaterVtx& v) -> bool {
         const int x = gx + 1, z = gz + 1;
         const f32 wx = s.originX + x * s.dx, wz = s.originZ + z * s.dx;
-        Vert v{wx, s.waterY, wz, GXColor{0, 0, 0, 0}, false};
-        if (!s.cell_water(x, z)) return v;
         f32 base = s.waterY;
         g_map.height(wx, wz, base);
+        if (!s.cell_water(x, z)) {
+            fill_vertex(v, wx, base + 0.8f, wz, 0.0f, 0.0f, 0.0f, 0.0f);
+            return false;
+        }
         const int i = s.idx(x, z);
         f32 ah, agx, agz;
         swell_at(wx, wz, ah, agx, agz);
         const f32 hh = s.h[i] + ah;
         const f32 gxx = (s.h[i + 1] - s.h[i - 1]) / (2.0f * s.dx) + agx;
         const f32 gzz = (s.h[i + s.n] - s.h[i - s.n]) / (2.0f * s.dx) + agz;
-        const f32 lap = (s.h[i - 1] + s.h[i + 1] + s.h[i - s.n] + s.h[i + s.n] - 4.0f * s.h[i]) *
-                        (9.0f / s.dx);
         f32 fade = s.coverage(wx, wz);
         if (inner != nullptr) fade *= 1.0f - inner->coverage(wx, wz);
-        v.y = base + 0.8f + hh;
-        v.c = sh.shade(wx, v.y, wz, hh, gxx, gzz, lap, 1.0f, fade);
-        v.ok = fade > 0.0f;
-        return v;
+        fill_vertex(v, wx, base + 0.8f + hh, wz, gxx, gzz, hh, fade);
+        return fade > 0.0f;
     });
 }
 
-void draw_ambient(const Shader& sh) {
+void add_ambient() {
     constexpr f32 STEP = 80.0f;
     const int n = int((WaterMap::M - 1) * WaterMap::S / STEP);
     const f32 ox = g_map.originX, oz = g_map.originZ;
     const f32 cx = ox + (WaterMap::M - 1) * WaterMap::S * 0.5f, cz = oz + (WaterMap::M - 1) * WaterMap::S * 0.5f;
     const f32 radius = (WaterMap::M - 1) * WaterMap::S * 0.5f;
-    draw_grid(n, n, [&](int x, int z) -> Vert {
+    add_grid(n, n, [&](int x, int z, WaterVtx& v) -> bool {
         const f32 wx = ox + x * STEP, wz = oz + z * STEP;
-        Vert v{wx, 0.0f, wz, GXColor{0, 0, 0, 0}, false};
         f32 base;
-        if (!g_map.height(wx, wz, base)) return v;
+        if (!g_map.height(wx, wz, base)) {
+            fill_vertex(v, wx, 0.0f, wz, 0.0f, 0.0f, 0.0f, 0.0f);
+            return false;
+        }
         f32 h, gx, gz;
         swell_at(wx, wz, h, gx, gz);
-        // Fade toward the edge of the map, and under the interactive layers.
         const f32 r = std::sqrt((wx - cx) * (wx - cx) + (wz - cz) * (wz - cz)) / radius;
         f32 fade = std::max(0.0f, std::min(1.0f, (1.0f - r) * 3.0f));
         fade *= 1.0f - std::max(g_fine.coverage(wx, wz), g_coarse.coverage(wx, wz));
-        v.y = base + 0.8f + h;
-        v.c = sh.shade(wx, v.y, wz, h, gx, gz, 0.0f, 0.55f, fade);
-        v.ok = fade > 0.0f;
-        return v;
+        fill_vertex(v, wx, base + 0.8f + h, wz, gx, gz, h, fade);
+        return fade > 0.0f;
     });
 }
 
@@ -667,21 +838,95 @@ class SurfacePacket : public J3DPacket {
 public:
     void draw() override;
 };
-SurfacePacket l_packet;
+SurfacePacket l_packets[4];
+u32 l_packetNext = 0;
 
 void SurfacePacket::draw() {
     if (!enabled()) return;
-    const Light L = current_light();
-    f32 y = g_fine.active ? g_fine.waterY : g_coarse.waterY;
-    if (fopAc_ac_c* pl = dComIfGp_getPlayer(0)) {
-        g_map.height(pl->current.pos.x, pl->current.pos.z, y);
+    camera_process_class* cam = dComIfGp_getCamera(0);
+    if (cam == NULL || aurora::gfx::is_offscreen()) return;
+    if (g_drawType == aurora::gfx::InvalidDrawType) {
+        g_drawType = aurora::gfx::register_draw_type({.label = "Felix water", .draw = draw_cb});
+        if (g_drawType == aurora::gfx::InvalidDrawType) return;
     }
-    const Shader sh(L, y);
-    setup_gx();
-    if (g_map.any_water_near()) draw_ambient(sh);
-    if (g_coarse.active) draw_sim(g_coarse, sh, g_fine.active ? &g_fine : nullptr);
-    if (g_fine.active) draw_sim(g_fine, sh, nullptr);
-    J3DShape::resetVcdVatCache();
+
+    g_vtx.clear();
+    g_idx.clear();
+    if (g_map.any_water_near()) add_ambient();
+    if (g_coarse.active) add_sim(g_coarse, g_fine.active ? &g_fine : nullptr);
+    if (g_fine.active) add_sim(g_fine, nullptr);
+    if (g_idx.empty()) return;
+
+    // View-projection as aurora draws it: GX projection with reversed Z.
+    const Mtx44& P = cam->view.projMtx;
+    MtxP Vw = j3dSys.getViewMtx();
+    WaterParams prm{};
+    for (int r = 0; r < 4; r++) {
+        f32 pr[4] = {P[r][0], P[r][1], P[r][2], P[r][3]};
+        if (r == 2 && aurora::gfx::uses_reversed_z()) {
+            for (f32& c : pr) c = -c;
+        }
+        for (int c = 0; c < 4; c++) {
+            f32 s = pr[3] * (c == 3 ? 1.0f : 0.0f);
+            for (int k = 0; k < 3; k++) s += pr[k] * Vw[k][c];
+            prm.vp[r][c] = s;
+        }
+    }
+    // Recover the camera position from the view matrix (inverse of the rotation part).
+    const f32 ex = -(Vw[0][0] * Vw[0][3] + Vw[1][0] * Vw[1][3] + Vw[2][0] * Vw[2][3]);
+    const f32 ey = -(Vw[0][1] * Vw[0][3] + Vw[1][1] * Vw[1][3] + Vw[2][1] * Vw[2][3]);
+    const f32 ez = -(Vw[0][2] * Vw[0][3] + Vw[1][2] * Vw[1][3] + Vw[2][2] * Vw[2][3]);
+    prm.eye[0] = ex;
+    prm.eye[1] = ey;
+    prm.eye[2] = ez;
+    prm.eye[3] = g_time;
+    dScnKy_env_light_c* env = dKy_getEnvlight();
+    cXyz sd(env->sun_pos.x - ex, env->sun_pos.y - ey, env->sun_pos.z - ez);
+    if (sd.abs() < 1.0f || sd.y < 0.05f * sd.abs()) sd.set(0.3f, 1.0f, 0.2f);
+    sd = sd.normZP();
+    const f32 t = env->getDaytime();
+    const bool day = t >= 90.0f && t < 285.0f;
+    prm.sun[0] = sd.x;
+    prm.sun[1] = sd.y;
+    prm.sun[2] = sd.z;
+    prm.sun[3] = (day ? 1.6f : 0.35f) * (dKy_darkworld_check() ? 0.6f : 1.0f);
+    const GXColorS10 sky = env->vrbox_sky_col;
+    prm.sky[0] = std::clamp(sky.r / 255.0f, 0.0f, 1.0f);
+    prm.sky[1] = std::clamp(sky.g / 255.0f, 0.0f, 1.0f);
+    prm.sky[2] = std::clamp(sky.b / 255.0f, 0.0f, 1.0f);
+    prm.prj[0] = aurora::gfx::uses_reversed_z() ? P[2][2] : P[2][2];
+    prm.prj[1] = P[2][3];
+    prm.misc[0] = 1.0f;  // refraction
+    prm.misc[1] = 1.0f;  // reflection
+    prm.misc[2] = 1.0f;  // foam
+
+    AuroraGXSync();
+    aurora::gfx::ResolvedTargets targets;
+    if (!aurora::gfx::resolve_pass({.color = true, .depth = true, .normal = false}, targets) ||
+        !targets.color || !targets.depth || targets.width == 0)
+    {
+        return;
+    }
+    prm.prj[2] = f32(targets.width);
+    prm.prj[3] = f32(targets.height);
+    const auto vr = aurora::gfx::push_verts(reinterpret_cast<const uint8_t*>(g_vtx.data()),
+                                            g_vtx.size() * sizeof(WaterVtx), 4);
+    const auto ir = aurora::gfx::push_indices(reinterpret_cast<const uint8_t*>(g_idx.data()),
+                                              g_idx.size() * sizeof(u32), 4);
+    const auto ur = aurora::gfx::push_uniform(reinterpret_cast<const uint8_t*>(&prm), sizeof(prm));
+    if (vr.size == 0 || ir.size == 0 || ur.size == 0) return;
+    const WaterPayload pl{
+        .color = targets.color.Get(),
+        .depth = targets.depth.Get(),
+        .vtxOffset = vr.offset,
+        .vtxSize = vr.size,
+        .idxOffset = ir.offset,
+        .idxCount = u32(g_idx.size()),
+        .uniOffset = ur.offset,
+        .width = targets.width,
+        .height = targets.height,
+    };
+    aurora::gfx::push_custom_draw(g_drawType, &pl, sizeof(pl));
 }
 
 // While it rains, let each drop that lands on nearby water leave a small ring.
@@ -778,7 +1023,7 @@ void draw() {
     if (!g_fine.active && !g_coarse.active && !g_map.any_water_near()) return;
     // Translucent object list: drawn after the stage's water (XluListBG) and its particles.
     dComIfGd_setList();
-    j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu)->entryImm(&l_packet, 0);
+    j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu)->entryImm(&l_packets[l_packetNext++ & 3], 0);
 }
 
 void reset() {
