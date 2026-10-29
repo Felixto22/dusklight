@@ -441,7 +441,27 @@ V3 groom_target(J3DModel* model, const GroomPoint& gp) {
     return pa * w + pb * (1.0f - w);
 }
 
+// Axes the mane and tail hang around (neck1 -> head, tail1 -> tail3), for normals that
+// point away from the neck / tail like the original cards' did.
+V3 g_axisA[2], g_axisB[2];
+
+V3 joint_pos(J3DModel* model, int j) {
+    MtxP m = model->getAnmMtx(j);
+    return {m[0][3], m[1][3], m[2][3]};
+}
+
+V3 away_from_axis(int group, const V3& p) {
+    const V3 a = g_axisA[group], ab = g_axisB[group] - a;
+    const f32 l2 = dot(ab, ab);
+    const f32 t = l2 > 1e-4f ? std::clamp(dot(p - a, ab) / l2, 0.0f, 1.0f) : 0.0f;
+    return norm(p - (a + ab * t));
+}
+
 void simulate_groom(J3DModel* model) {
+    g_axisA[0] = joint_pos(model, 11);  // neck1
+    g_axisB[0] = joint_pos(model, 15);  // head
+    g_axisA[1] = joint_pos(model, 35);  // tail1
+    g_axisB[1] = joint_pos(model, 37);  // tail3
     if (g_groom.size() != size_t(kGroomStrandCount)) {
         g_groom.assign(kGroomStrandCount, GroomState{});
     }
@@ -790,10 +810,8 @@ void GroomPacket::draw() {
             const u8 r = u8(std::clamp((cr * m + spec) * 255.0f, 0.0f, 255.0f));
             const u8 gg = u8(std::clamp((cg * m + spec * 0.95f) * 255.0f, 0.0f, 255.0f));
             const u8 bb = u8(std::clamp((cb * m + spec * 0.88f) * 255.0f, 0.0f, 255.0f));
-            // Facing the camera, tilted up so the top of the mane catches the light.
-            V3 nrm = norm(cross(side, dir));
-            if (dot(nrm, view) < 0.0f) nrm = nrm * -1.0f;
-            nrm = norm(nrm + V3{0.0f, 1.2f, 0.0f});
+            // Away from the neck / tail like the original cards, a little toward the sky.
+            const V3 nrm = norm(away_from_axis(st.group, g.p[k]) + V3{0.0f, 0.5f, 0.0f});
             const V3 p0 = g.p[k] - side, p1 = g.p[k] + side;
             GXPosition3f32(p0.x, p0.y, p0.z);
             GXNormal3f32(nrm.x, nrm.y, nrm.z);
@@ -822,7 +840,7 @@ struct FurStyle {
     f32 length = 1.6f;   // game units (1 unit ~ 1 cm)
     f32 density = 34.0f; // pattern repeats across the body texture
     f32 rootShade = 0.78f;
-    f32 tipShade = 1.08f;
+    f32 tipShade = 1.0f;
     bool tufts = false;
 };
 
@@ -835,7 +853,7 @@ FurStyle fur_style() {
     f.length = 1.2f + 8.8f * t * t + 1.4f * t;
     f.density = 34.0f / (1.0f + 1.6f * t);
     f.rootShade = 0.80f - 0.20f * t;  // deep coat a little darker between the tufts
-    f.tipShade = 1.08f + 0.12f * t;   // bright fuzzy tips
+    f.tipShade = 1.0f;                 // tips at the body's own brightness
     f.tufts = v >= 4;
     return f;
 }
@@ -985,7 +1003,8 @@ void FurPacket::draw() {
         const f32 t = f32(k + 1) / style.shells;
         // Darker deep in the coat, lighter at the tips; tips thin out.
         const f32 shade = style.rootShade + (style.tipShade - style.rootShade) * std::pow(t, 0.8f);
-        const s16 sv = s16(255.0f * shade);
+        // The TEV's multiplier input only takes 0..255 (higher values wrap to black).
+        const s16 sv = s16(std::clamp(255.0f * shade, 0.0f, 255.0f));
         GXColorS10 c{sv, sv, sv, 255};
         GXSetTevColorS10(GX_TEVREG1, c);
         const f32 cut = style.tufts ? 12.0f + 215.0f * t : 40.0f + 200.0f * t;
