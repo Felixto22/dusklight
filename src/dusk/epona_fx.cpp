@@ -673,6 +673,16 @@ void load_material_tev(J3DMaterial* mat, GXTevStageID stage) {
     GXSetTevColorOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_4, GX_TRUE, GX_TEVPREV);
 }
 
+// Put back what J3D expects to find (reinitGX leaves the konst selections alone).
+void restore_gx() {
+    for (int i = 0; i < GX_MAX_TEVSTAGE; i++) {
+        GXSetTevKColorSel(GXTevStageID(i), GX_TEV_KCSEL_1_4);
+        GXSetTevKAlphaSel(GXTevStageID(i), GX_TEV_KASEL_1);
+    }
+    J3DShape::resetVcdVatCache();
+    j3dSys.reinitGX();
+}
+
 J3DMaterial* shape_material(J3DModel* model, int shapeNo) {
     J3DModelData* data = model->getModelData();
     if (shapeNo >= data->getShapeNum()) return nullptr;
@@ -796,8 +806,7 @@ void GroomPacket::draw() {
         }
         GXEnd();
     }
-    J3DShape::resetVcdVatCache();
-    j3dSys.reinitGX();
+    restore_gx();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -990,8 +999,7 @@ void FurPacket::draw() {
         j3dSys.setVtxPos(g_shellPos[k].data(), kEponaPosCount);
         shape->draw();
     }
-    J3DShape::resetVcdVatCache();
-    j3dSys.reinitGX();
+    restore_gx();
 }
 
 GXColorS10 light_of(dKy_tevstr_c* tevstr) {
@@ -1047,7 +1055,7 @@ void draw(J3DModel* model, dKy_tevstr_c* tevstr) {
         l_groomPacket.maneMat = shape_material(model, 2);
         l_groomPacket.tailMat = shape_material(model, 0);
         dComIfGd_setList();
-        j3dSys.getDrawBuffer(J3DSysDrawBuf_Opa)->entryImm(&l_groomPacket, 0);
+        j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu)->entryImm(&l_groomPacket, 0);
         g_strandsReady = false;
     } else if (hair_enabled()) {
         if (g_strandFrame != g_frame) {
@@ -1069,7 +1077,9 @@ void draw(J3DModel* model, dKy_tevstr_c* tevstr) {
         l_furPacket.light = l;
         l_furPacket.style = style;
         dComIfGd_setList();
-        j3dSys.getDrawBuffer(J3DSysDrawBuf_Opa)->entryImm(&l_furPacket, 0);
+        // After every opaque model (Epona's body included), so the GX state we change
+        // can never leak into the body's own draw.
+        j3dSys.getDrawBuffer(J3DSysDrawBuf_Xlu)->entryImm(&l_furPacket, 0);
     }
 }
 
