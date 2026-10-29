@@ -1442,6 +1442,8 @@ set(DUSK_FILES
         src/dusk/gamepad_color.cpp
         src/dusk/epona_fx.cpp
         src/dusk/epona_fx.h
+        src/dusk/link_hair.cpp
+        src/dusk/link_hair.h
         src/dusk/water_sim.cpp
         src/dusk/water_sim.h
         src/dusk/globals.cpp

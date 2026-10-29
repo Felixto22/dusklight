@@ -910,6 +910,12 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
             "How long and fluffy Epona's coat is. 1-3: a short, realistic horse coat. "
             "4-10: longer, softer fur in pointed tufts, up to a plush, cartoon-style coat.",
             1, 10, 1, [] { return !getSettings().game.eponaFur.getValue(); });
+        config_bool_select(leftPane, rightPane, getSettings().game.linkRealHair,
+            {
+                .key = "Link Real Hair",
+                .helpText = "Lays locks of fine hair over Link's hair, combed the same way and in "
+                            "the same colours, that sway on their own as he moves and in the wind."
+            });
         config_bool_select(leftPane, rightPane, getSettings().game.enableMapBackground,
             {
                 .key = "Enable Mini-Map Shadows",

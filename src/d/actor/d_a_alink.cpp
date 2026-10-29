@@ -56,6 +56,7 @@
 #include "dusk/interp/frame_interpolation.h"
 #include "dusk/interp/sight.h"
 #include "dusk/settings.h"
+#include "dusk/link_hair.h"
 #include "res/Object/Alink.h"
 #include <cstring>
 #include <helpers/string.hpp>
@@ -19721,6 +19722,11 @@ int daAlink_c::draw() {
         BOOL var_r3 = isPlayerNoDraw || dComIfGp_checkCameraAttentionStatus(field_0x317c, 0x20);
 
         modelDraw(mpLinkHatModel, var_r3);
+#if TARGET_PC
+        if (!var_r3 && mpLinkHatModel != NULL) {
+            dusk::linkhair::draw(mpLinkHatModel);
+        }
+#endif
 
         if (checkNoResetFlg1(FLG1_UNK_10)) {
             modelDraw(mpDemoFCBlendModel, var_r3);

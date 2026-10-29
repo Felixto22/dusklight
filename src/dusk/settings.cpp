@@ -85,6 +85,7 @@ UserSettings g_userSettings = {
         .eponaFurLength {"game.eponaFurLength", 8},
         .eponaRealMane {"game.eponaRealMane", true},
         .eponaManeVolume {"game.eponaManeVolume", 3},
+        .linkRealHair {"game.linkRealHair", true},
         .enableTextureReplacements {"game.enableTextureReplacements", true},
         .enableFrameInterpolation {"game.enableFrameInterpolation", FrameInterpMode::Off},
         .internalResolutionScale {"game.internalResolutionScale", 0},
@@ -329,6 +330,7 @@ void registerSettings() {
     Register(g_userSettings.game.eponaFurLength);
     Register(g_userSettings.game.eponaRealMane);
     Register(g_userSettings.game.eponaManeVolume);
+    Register(g_userSettings.game.linkRealHair);
     Register(g_userSettings.game.enableTextureReplacements,
         [](const bool&, const bool&) { texture_replacements::reload(); });
     Register(g_userSettings.game.internalResolutionScale,
