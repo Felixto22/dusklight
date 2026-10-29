@@ -46,6 +46,7 @@
 #endif
 
 #if TARGET_PC
+#include "dusk/ssao.h"
 #include "dusk/dusk.h"
 #include "dusk/game_clock.h"
 #include "dusk/gfx.hpp"
@@ -2392,6 +2393,7 @@ int mDoGph_Painter() {
             GX_DEBUG_GROUP(dComIfGd_drawOpaListPacket);
 
 #if TARGET_PC
+            dusk::ssao::apply(camera_p->view.projMtx);
             dusk::mods::gfx_run_stage(GFX_STAGE_SCENE_AFTER_OPAQUE, &camera_p->view, view_port);
 #endif
 

@@ -1444,6 +1444,8 @@ set(DUSK_FILES
         src/dusk/epona_fx.h
         src/dusk/link_hair.cpp
         src/dusk/link_hair.h
+        src/dusk/ssao.cpp
+        src/dusk/ssao.h
         src/dusk/water_sim.cpp
         src/dusk/water_sim.h
         src/dusk/globals.cpp

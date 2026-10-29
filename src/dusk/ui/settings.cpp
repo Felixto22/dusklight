@@ -873,6 +873,15 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
             "Framerate Cap", "Limit the framerate to the specified value.", 30, 540, 1,
             [] { return getSettings().game.enableFrameInterpolation.getValue() != FrameInterpMode::Capped; },
             [](int) { presentation::update_frame_rate_preference(); });
+        config_bool_select(leftPane, rightPane, getSettings().game.ambientOcclusion,
+            {
+                .key = "Ambient Occlusion",
+                .helpText = "Shades corners, creases, the base of trees and walls and where objects "
+                            "meet the ground, like light that can't reach in there. Adds a lot of depth."
+            });
+        config_int_select(leftPane, rightPane, getSettings().game.ambientOcclusionStrength,
+            "Ambient Occlusion Strength", "How dark the ambient occlusion shading gets.", 25, 200, 25,
+            [] { return !getSettings().game.ambientOcclusion.getValue(); }, {}, "%");
         config_bool_select(leftPane, rightPane, getSettings().game.dynamicWater,
             {
                 .key = "Dynamic Water",
