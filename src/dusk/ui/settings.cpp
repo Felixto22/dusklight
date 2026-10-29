@@ -916,6 +916,11 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                 .helpText = "Lays locks of fine hair over Link's hair, combed the same way and in "
                             "the same colours, that sway on their own as he moves and in the wind."
             });
+        config_int_select(leftPane, rightPane, getSettings().game.linkHairVolume,
+            "Link Hair Volume",
+            "How full Link's real hair is: 1 is a single layer of locks over his hair, higher "
+            "values add more layers for a thicker, fluffier head of hair.",
+            1, 5, 1, [] { return !getSettings().game.linkRealHair.getValue(); });
         config_bool_select(leftPane, rightPane, getSettings().game.enableMapBackground,
             {
                 .key = "Enable Mini-Map Shadows",

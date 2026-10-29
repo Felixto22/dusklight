@@ -251,6 +251,7 @@ struct UserSettings {
         ConfigVar<bool> eponaRealMane;
         ConfigVar<int> eponaManeVolume;
         ConfigVar<bool> linkRealHair;
+        ConfigVar<int> linkHairVolume;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<FrameInterpMode> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;

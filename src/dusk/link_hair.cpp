@@ -123,8 +123,8 @@ void simulate(J3DModel* model) {
     cXyz wpos(g_headCenter.x, g_headCenter.y, g_headCenter.z), wdir(0.0f, 0.0f, 0.0f);
     f32 wpow = 0.0f;
     dKyw_get_AllWind_vec(&wpos, &wdir, &wpow);
-    const V3 wind = V3{wdir.x, wdir.y, wdir.z} * (wpow * 0.15f);
-    const V3 gravity{0.0f, -0.05f, 0.0f};
+    const V3 wind = V3{wdir.x, wdir.y, wdir.z} * (wpow * 0.25f);
+    const V3 gravity{0.0f, -0.07f, 0.0f};
     for (int si = 0; si < m.strandCount; si++) {
         const LinkHairStrand& st = kLinkHairStrands[m.firstStrand + si];
         State& g = g_state[si];
@@ -144,11 +144,11 @@ void simulate(J3DModel* model) {
         g.p[0] = t[0];
         for (int k = 1; k < n; k++) {
             const f32 u = f32(k) / (n - 1);
-            const V3 v = (g.p[k] - g.q[k]) * 0.88f;
+            const V3 v = (g.p[k] - g.q[k]) * 0.91f;
             g.q[k] = g.p[k];
             g.p[k] += v + gravity + wind * u;
-            // Short hair keeps its style: firm pull back to the combed shape.
-            g.p[k] += (t[k] - g.p[k]) * (0.60f - 0.38f * u);
+            // Keeps its style at the roots, tips free enough to swing and bounce.
+            g.p[k] += (t[k] - g.p[k]) * (0.55f - 0.43f * u);
         }
         for (int k = 1; k < n; k++) {
             const V3 e = g.p[k] - g.p[k - 1];
@@ -290,9 +290,9 @@ void HairPacket::draw() {
     GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
     GXSetVtxDesc(GX_VA_TEX1, GX_DIRECT);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 6);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX1, GX_TEX_ST, GX_F32, 0);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX1, GX_TEX_ST, GX_U16, 15);
     data->getTexture()->loadGX(mat->getTexNo(0), GX_TEXMAP0);
     GXLoadTexObj(&g_hairObj, GX_TEXMAP1);
     GXSetNumTexGens(2);
@@ -317,6 +317,7 @@ void HairPacket::draw() {
     J3DDifferedTexMtx::sTexGenBlock = NULL;
 
     const LinkHairModel& m = *g_model;
+    const int copies = std::clamp(dusk::getSettings().game.linkHairVolume.getValue(), 1, 5);
     Mtx cs;
     const f32 cl[3] = {3.0f, -12.0f, 0.0f};
     const V3 center = xform(presented_mtx(model, 0, cs), cl);
@@ -329,28 +330,42 @@ void HairPacket::draw() {
         for (int k = 0; k < n; k++) {
             P[k] = g.p[k] + (target_presented(model, kLinkHairPoints[st.first + k]) - g.t[k]);
         }
-        const f32 w0 = 0.95f * (0.8f + 0.4f * hash01(u32(si) * 2654435761u));
-        const f32 w1 = w0 * 0.35f;
-        GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, u16(n * 2));
-        for (int k = 0; k < n; k++) {
-            const f32 t = f32(k) / (n - 1);
-            const V3 a = P[std::max(0, k - 1)], b = P[std::min(n - 1, k + 1)];
-            const V3 dir = norm(b - a);
-            const V3 view = norm(eye - P[k]);
-            const V3 side = norm(cross(dir, view)) * (0.5f * (w0 + (w1 - w0) * t));
-            const V3 nrm = norm(P[k] - center);
-            const LinkHairPoint& hp = kLinkHairPoints[st.first + k];
-            const V3 p0 = P[k] - side, p1 = P[k] + side;
-            GXPosition3f32(p0.x, p0.y, p0.z);
-            GXNormal3f32(nrm.x, nrm.y, nrm.z);
-            GXTexCoord2f32(hp.uv[0], hp.uv[1]);
-            GXTexCoord2f32(0.0f, t);
-            GXPosition3f32(p1.x, p1.y, p1.z);
-            GXNormal3f32(nrm.x, nrm.y, nrm.z);
-            GXTexCoord2f32(hp.uv[0], hp.uv[1]);
-            GXTexCoord2f32(1.0f, t);
+        // Volume: each lock drawn in several copies, lifted off the head and spread
+        // sideways, more toward the tips, so the hair is fuller and its swing shows.
+        for (int c = 0; c < copies; c++) {
+            const u32 cs2 = u32(si) * 2654435761u + u32(c) * 0x9E3779B9u;
+            const f32 w0 = 1.15f * (0.8f + 0.4f * hash01(cs2));
+            const f32 w1 = w0 * 0.35f;
+            const f32 lift = c == 0 ? 0.0f : 0.25f + 0.9f * hash01(cs2 + 11u);
+            const f32 lat = c == 0 ? 0.0f : (hash01(cs2 + 23u) * 2.0f - 1.0f) * 1.2f;
+            GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, u16(n * 2));
+            for (int k = 0; k < n; k++) {
+                const f32 t = f32(k) / (n - 1);
+                const V3 a = P[std::max(0, k - 1)], b = P[std::min(n - 1, k + 1)];
+                const V3 dir = norm(b - a);
+                const V3 out = norm(P[k] - center);
+                const V3 side0 = norm(cross(dir, out));
+                const f32 grow = 0.4f + 1.1f * t;
+                const V3 pc = P[k] + (out * lift + side0 * lat) * grow;
+                const V3 view = norm(eye - pc);
+                const V3 side = norm(cross(dir, view)) * (0.5f * (w0 + (w1 - w0) * t));
+                const s8 nx = s8(std::clamp(out.x * 64.0f, -127.0f, 127.0f));
+                const s8 ny = s8(std::clamp(out.y * 64.0f, -127.0f, 127.0f));
+                const s8 nz = s8(std::clamp(out.z * 64.0f, -127.0f, 127.0f));
+                const u16 tv = u16(t * 32767.0f);
+                const LinkHairPoint& hp = kLinkHairPoints[st.first + k];
+                const V3 p0 = pc - side, p1 = pc + side;
+                GXPosition3f32(p0.x, p0.y, p0.z);
+                GXNormal3s8(nx, ny, nz);
+                GXTexCoord2f32(hp.uv[0], hp.uv[1]);
+                GXTexCoord2u16(0, tv);
+                GXPosition3f32(p1.x, p1.y, p1.z);
+                GXNormal3s8(nx, ny, nz);
+                GXTexCoord2f32(hp.uv[0], hp.uv[1]);
+                GXTexCoord2u16(32767, tv);
+            }
+            GXEnd();
         }
-        GXEnd();
     }
     for (int i = 0; i < GX_MAX_TEVSTAGE; i++) {
         GXSetTevKColorSel(GXTevStageID(i), GX_TEV_KCSEL_1_4);
