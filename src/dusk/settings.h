@@ -254,6 +254,7 @@ struct UserSettings {
         ConfigVar<int> linkHairVolume;
         ConfigVar<bool> ambientOcclusion;
         ConfigVar<int> ambientOcclusionStrength;
+        ConfigVar<int> waterReflections;
         ConfigVar<bool> enableTextureReplacements;
         ConfigVar<FrameInterpMode> enableFrameInterpolation;
         ConfigVar<int> internalResolutionScale;

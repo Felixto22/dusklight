@@ -579,10 +579,29 @@ fn depth_at(uv: vec2f) -> f32 {
     let my_d = in.pos.z;
     let dist = max(-lin(my_d), 50.0);
 
+    // The stage water's own refraction smears whatever stands in it (Link, Epona) into the
+    // water around it. Water pixels next to something standing in front of the water take
+    // their picture from clean water a little further away instead.
+    var base_uv = uv;
+    let rad = 0.016 * size.y;
+    var push = vec2f(0.0);
+    for (var k = 0; k < 8; k++) {
+        let a = f32(k) * 0.785398;
+        let dir = vec2f(cos(a), sin(a));
+        if (depth_at(uv + dir * rad / size) > my_d + 1e-5) { push -= dir; }
+        if (depth_at(uv + dir * rad * 0.5 / size) > my_d + 1e-5) { push -= dir; }
+    }
+    if (dot(push, push) > 1e-4) {
+        let cand = uv + normalize(push) * rad * 1.6 / size;
+        if (all(cand >= vec2f(0.0)) && all(cand <= vec2f(1.0)) && depth_at(cand) <= my_d + 1e-5) {
+            base_uv = cand;
+        }
+    }
+
     // Refraction: shift the picture of the water by the wave slope (less with distance).
-    var ruv = uv + n.xz * vec2f(1.0, -1.0) * (u.misc.x * 900.0 / dist) / size.y;
+    var ruv = base_uv + n.xz * vec2f(1.0, -1.0) * (u.misc.x * 900.0 / dist) / size.y;
     ruv = clamp(ruv, vec2f(0.0), vec2f(1.0));
-    if (depth_at(ruv) > my_d + 1e-5) { ruv = uv; }   // that pixel is in front of the water
+    if (depth_at(ruv) > my_d + 1e-5) { ruv = base_uv; }   // that pixel is in front of the water
     let refr = textureSampleLevel(scene, samp, ruv, 0.0).rgb;
 
     // Screen-space reflection along the reflected view ray.
@@ -616,8 +635,8 @@ fn depth_at(uv: vec2f) -> f32 {
         reflW = clamp(e * 12.0, 0.0, 1.0);
     }
     let ndv = clamp(dot(n, V), 0.0, 1.0);
-    let fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
-    var col = mix(refr, refl, clamp(fres * u.misc.y * reflW, 0.0, 0.85));
+    let fres = 0.08 + 0.92 * pow(1.0 - ndv, 5.0);
+    var col = mix(refr, refl, clamp(fres * 2.2 * u.misc.y * reflW, 0.0, 0.9));
 
     // Sun glint on the waves and foam on steep crests.
     let H = normalize(u.sun.xyz + V);
@@ -897,7 +916,7 @@ void SurfacePacket::draw() {
     prm.prj[0] = aurora::gfx::uses_reversed_z() ? P[2][2] : P[2][2];
     prm.prj[1] = P[2][3];
     prm.misc[0] = 1.0f;  // refraction
-    prm.misc[1] = 1.0f;  // reflection
+    prm.misc[1] = std::clamp(dusk::getSettings().game.waterReflections.getValue(), 0, 300) / 100.0f;
     prm.misc[2] = 1.0f;  // foam
 
     AuroraGXSync();

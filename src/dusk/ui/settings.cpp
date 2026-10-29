@@ -889,6 +889,11 @@ SettingsWindow::SettingsWindow(bool prelaunch) : mPrelaunch(prelaunch) {
                             "spread, cross and bounce off shores, a wake behind you, and sun "
                             "glints and foam on the crests. Turn off for the original flat ripples."
             });
+        config_int_select(leftPane, rightPane, getSettings().game.waterReflections,
+            "Water Reflections",
+            "How strongly the water reflects Link, Epona, trees and everything on screen. "
+            "Stronger when you look across the water, weaker looking straight down.",
+            0, 300, 25, [] { return !getSettings().game.dynamicWater.getValue(); }, {}, "%");
         config_bool_select(leftPane, rightPane, getSettings().game.eponaHairPhysics,
             {
                 .key = "Epona Hair Physics",

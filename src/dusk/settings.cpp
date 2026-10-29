@@ -89,6 +89,7 @@ UserSettings g_userSettings = {
         .linkHairVolume {"game.linkHairVolume", 3},
         .ambientOcclusion {"game.ambientOcclusion", true},
         .ambientOcclusionStrength {"game.ambientOcclusionStrength", 100},
+        .waterReflections {"game.waterReflections", 100},
         .enableTextureReplacements {"game.enableTextureReplacements", true},
         .enableFrameInterpolation {"game.enableFrameInterpolation", FrameInterpMode::Off},
         .internalResolutionScale {"game.internalResolutionScale", 0},
@@ -337,6 +338,7 @@ void registerSettings() {
     Register(g_userSettings.game.linkHairVolume);
     Register(g_userSettings.game.ambientOcclusion);
     Register(g_userSettings.game.ambientOcclusionStrength);
+    Register(g_userSettings.game.waterReflections);
     Register(g_userSettings.game.enableTextureReplacements,
         [](const bool&, const bool&) { texture_replacements::reload(); });
     Register(g_userSettings.game.internalResolutionScale,
