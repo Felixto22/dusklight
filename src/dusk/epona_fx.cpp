@@ -747,12 +747,21 @@ void GroomPacket::draw() {
     GXSetVtxDesc(GX_VA_NRM, GX_DIRECT);
     GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
     GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    // Compact vertices (23 bytes): everything drawn this way shares a 5 MB per-frame
+    // vertex buffer with the rest of the game.
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_F32, 0);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NRM, GX_NRM_XYZ, GX_S8, 6);
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
-    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_U16, 15);
     int litGroup = -1;
-    const int copies = std::clamp(dusk::getSettings().game.eponaManeVolume.getValue(), 1, 5);
+    // Vertex budget: the first copy of every lock uses up to 8 points, each extra copy 5.
+    // Extra copies are only drawn while they fit (~2 MB at most).
+    constexpr int kBudget = 85000;
+    constexpr int kBasePts = 8, kCopyPts = 5;
+    const int wanted = std::clamp(dusk::getSettings().game.eponaManeVolume.getValue(), 1, 5);
+    const int baseVerts = kGroomStrandCount * kBasePts * 2;
+    const int copyVerts = kGroomStrandCount * kCopyPts * 2;
+    const int copies = std::clamp(1 + (kBudget - baseVerts) / copyVerts, 1, wanted);
     GXLoadTexObj(&g_hairObj, GX_TEXMAP0);
     GXSetNumTexGens(1);
     GXSetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
@@ -798,8 +807,10 @@ void GroomPacket::draw() {
             fan = tail ? 1.8f : 1.2f;
         }
         const f32 s0 = 0.0f, s1 = 1.0f;
-        GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, u16(n * 2));
-        for (int k = 0; k < n; k++) {
+        const int m = std::min(n, c == 0 ? kBasePts : kCopyPts);
+        GXBegin(GX_TRIANGLESTRIP, GX_VTXFMT0, u16(m * 2));
+        for (int j = 0; j < m; j++) {
+            const int k = (j * (n - 1) + (m - 1) / 2) / (m - 1);
             const f32 t = f32(k) / (n - 1);
             const V3 a = g.p[std::max(0, k - 1)], b = g.p[std::min(n - 1, k + 1)];
             const V3 dir = norm(b - a);
@@ -828,14 +839,18 @@ void GroomPacket::draw() {
             // Away from the neck / tail like the original cards, a little toward the sky.
             const V3 nrm = norm(out + V3{0.0f, 0.5f, 0.0f});
             const V3 p0 = pc - side, p1 = pc + side;
+            const s8 nx = s8(std::clamp(nrm.x * 64.0f, -127.0f, 127.0f));
+            const s8 ny = s8(std::clamp(nrm.y * 64.0f, -127.0f, 127.0f));
+            const s8 nz = s8(std::clamp(nrm.z * 64.0f, -127.0f, 127.0f));
+            const u16 tv = u16(t * 32767.0f);
             GXPosition3f32(p0.x, p0.y, p0.z);
-            GXNormal3f32(nrm.x, nrm.y, nrm.z);
+            GXNormal3s8(nx, ny, nz);
             GXColor4u8(r, gg, bb, 255);
-            GXTexCoord2f32(s0, t);
+            GXTexCoord2u16(u16(s0 * 32767.0f), tv);
             GXPosition3f32(p1.x, p1.y, p1.z);
-            GXNormal3f32(nrm.x, nrm.y, nrm.z);
+            GXNormal3s8(nx, ny, nz);
             GXColor4u8(r, gg, bb, 255);
-            GXTexCoord2f32(s1, t);
+            GXTexCoord2u16(u16(s1 * 32767.0f), tv);
         }
         GXEnd();
         }
