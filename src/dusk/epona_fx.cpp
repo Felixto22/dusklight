@@ -793,7 +793,7 @@ void GroomPacket::draw() {
             // Facing the camera, tilted up so the top of the mane catches the light.
             V3 nrm = norm(cross(side, dir));
             if (dot(nrm, view) < 0.0f) nrm = nrm * -1.0f;
-            nrm = norm(nrm + V3{0.0f, 0.6f, 0.0f});
+            nrm = norm(nrm + V3{0.0f, 1.2f, 0.0f});
             const V3 p0 = g.p[k] - side, p1 = g.p[k] + side;
             GXPosition3f32(p0.x, p0.y, p0.z);
             GXNormal3f32(nrm.x, nrm.y, nrm.z);
@@ -915,7 +915,9 @@ void build_shells(J3DModelData* data, const FurStyle& f) {
         g_shellPos[k].resize(kEponaPosCount);
         // Shells packed closer near the skin, where the coat is densest.
         const f32 u = f32(k + 1) / f.shells;
-        const f32 h = f.length * (0.35f * u + 0.65f * u * u);
+        // Start a little off the skin so the body can never win the depth test.
+        const f32 h0 = std::min(0.6f, f.length * 0.3f);
+        const f32 h = h0 + (f.length - h0) * (0.35f * u + 0.65f * u * u);
         for (int i = 0; i < kEponaPosCount; i++) {
             const f32 off = kEponaFur[i] > 0 ? h : (kEponaFur[i] < 0 ? -2.5f : 0.0f);
             g_shellPos[k][i].x = base[i].x + kEponaNormals[i][0] * off;
@@ -989,9 +991,12 @@ void FurPacket::draw() {
         const f32 cut = style.tufts ? 12.0f + 215.0f * t : 40.0f + 200.0f * t;
         if (k == 0) {
             // The first layer is a solid undercoat hugging the skin, so nothing of the
-            // original surface ever shows between the hairs.
+            // original surface ever shows between the hairs. Fully opaque, alpha 1.
+            GXSetTevKAlphaSel(GX_TEVSTAGE1, GX_TEV_KASEL_1);
+            GXSetTevAlphaIn(GX_TEVSTAGE1, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_KONST);
             GXSetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
         } else {
+            GXSetTevAlphaIn(GX_TEVSTAGE1, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
             GXSetAlphaCompare(GX_GREATER, u8(cut), GX_AOP_AND, GX_ALWAYS, 0);
         }
 
