@@ -21,7 +21,7 @@ index 1a312fb..f05ae8c 100644
  void GXPushDebugGroup(const char* label);
  
 +/** Felix build: see GX_AURORA_FOLIAGE_WIND. `params` may be null when disabling. */
-+void GXSetFoliageWindAurora(GXBool enable, const f32* params);
++void GXSetFoliageWindAurora(unsigned char enable, const float* params);
 +
  /**
   * Pop a debug group previously pushed via GXPushDebugGroup().
@@ -34,7 +34,7 @@ index 85a4285..d46cba4 100644
  
  void GXPopDebugGroup() { GX_WRITE_AURORA(GX_AURORA_DEBUG_GROUP_POP); }
  
-+void GXSetFoliageWindAurora(GXBool enable, const f32* params) {
++void GXSetFoliageWindAurora(unsigned char enable, const float* params) {
 +  GX_WRITE_AURORA(GX_AURORA_FOLIAGE_WIND);
 +  GX_WRITE_U32(enable ? 1u : 0u);
 +  for (int i = 0; i < 20; ++i) {
